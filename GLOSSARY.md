@@ -28,6 +28,14 @@ _Avoid_: Destroy, terminate
 An Environment whose VM is running and whose setup has finished, so it can be connected to.
 _Avoid_: Up, healthy
 
+**Idle**:
+An Environment with no open SSH connection, no setup running and no active Keep-alive.
+_Avoid_: Inactive, unused
+
+**Keep-alive**:
+A time-limited hold that stops an Environment from counting as Idle, for work that runs with nobody connected.
+_Avoid_: Lock, pin
+
 **Self-stop**:
 A Stop initiated by the Agent from inside the Environment, using a credential pushed to the VM.
 _Avoid_: Auto-shutdown
