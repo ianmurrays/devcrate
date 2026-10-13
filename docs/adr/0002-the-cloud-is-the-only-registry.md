@@ -1,0 +1,3 @@
+# The cloud is the only registry of Environments
+
+devcrate keeps no local record of which Environments exist or what state they are in. Each Provider tags its resources with the Environment name and answers `status` and `list` by reading the cloud; per-Environment configuration lives in the repo's `.devcrate.toml`, and secrets in the user's `~/.config/devcrate/config.toml`. We chose this over a local state file because the Agent stops Environments from the VM while the laptop may be asleep, so any local record would silently go stale, and because a lost or second laptop then sees the same Environments with nothing to import. The cost: `up` always needs the repo (current directory or URL) to know what to create, since a stopped Environment's volume can't be read.

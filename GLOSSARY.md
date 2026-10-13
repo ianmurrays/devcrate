@@ -24,6 +24,10 @@ _Avoid_: Shutdown, power off, pause
 Removing an Environment and everything it owns, including its persistent disk.
 _Avoid_: Destroy, terminate
 
+**Ready**:
+An Environment whose VM is running and whose setup has finished, so it can be connected to.
+_Avoid_: Up, healthy
+
 **Self-stop**:
 A Stop initiated by the Agent from inside the Environment, using a credential pushed to the VM.
 _Avoid_: Auto-shutdown
