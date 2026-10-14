@@ -182,12 +182,6 @@ func TestUpAfterSelfStopRestoresWorkspaceAndContainer(t *testing.T) {
 	must(os.MkdirAll(filepath.Join(e.Dir, ".devcontainer"), 0o755))
 	e.WriteFile(".devcontainer/devcontainer.json", devcontainerJSON)
 	e.Push()
-	// VM-only first, to load the image into the VM's Docker.
-	e.WriteFile(".devcrate.toml", "provider = \"fake\"\nidle_timeout = 0\ndevcontainer = false\n")
-	if r := e.Devcrate("up"); r.Code != 0 {
-		t.Fatalf("up exit %d", r.Code)
-	}
-	e.LoadImage("alpine:3.20")
 	e.WriteFile(".devcrate.toml", "provider = \"fake\"\nidle_timeout = \"3s\"\n")
 	if r := e.Devcrate("up"); r.Code != 0 {
 		t.Fatalf("up exit %d", r.Code)
