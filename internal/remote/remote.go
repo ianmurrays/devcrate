@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
@@ -133,6 +134,27 @@ func Unpin(knownHosts, alias string) error {
 		}
 	}
 	return os.WriteFile(knownHosts, []byte(strings.Join(keep, "")), 0o600)
+}
+
+// RunWithAgent is Run with the laptop's SSH agent at agentSock forwarded to
+// the session, as `ssh -A` does. An empty agentSock forwards nothing.
+func RunWithAgent(client *ssh.Client, agentSock, cmd string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if agentSock == "" {
+		return Run(client, cmd, stdin, stdout, stderr)
+	}
+	if err := agent.ForwardToRemote(client, agentSock); err != nil {
+		return err
+	}
+	s, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if err := agent.RequestAgentForwarding(s); err != nil {
+		return err
+	}
+	s.Stdin, s.Stdout, s.Stderr = stdin, stdout, stderr
+	return s.Run(cmd)
 }
 
 // Run runs cmd on the VM with the given stdio and returns its error
