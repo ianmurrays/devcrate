@@ -26,6 +26,9 @@ type Context struct {
 	Devcontainer *bool
 	// IdleTimeout is `idle_timeout` from .devcrate.toml, nil when unset.
 	IdleTimeout *time.Duration
+	// SetupScript is `setup_script` from .devcrate.toml: a path in the repo,
+	// run on the VM after the clone. Empty when unset.
+	SetupScript string
 }
 
 // DefaultIdleTimeout applies when neither the repo nor the user sets one.
@@ -118,6 +121,12 @@ func parse(origin, devcrateToml string) (*Context, error) {
 		}
 		c.IdleTimeout = &d
 		delete(c.Options, "idle_timeout")
+	}
+	if v, ok := c.Options["setup_script"]; ok {
+		if c.SetupScript, ok = v.(string); !ok {
+			return nil, errors.New(".devcrate.toml: setup_script must be a path in the repo")
+		}
+		delete(c.Options, "setup_script")
 	}
 	if name, ok := c.Options["name"]; ok {
 		c.Name = fmt.Sprint(name)
