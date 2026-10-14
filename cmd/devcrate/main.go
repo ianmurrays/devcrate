@@ -33,7 +33,7 @@ var (
 	userData string
 )
 
-const usage = "usage: devcrate up [--rebuild] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
+const usage = "usage: devcrate up [--rebuild] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -68,7 +68,7 @@ func run(args []string) error {
 	case "keep-alive":
 		cmd = keepAlive
 	case "forward":
-		cmd, allowed = forward, append(allowed, "-p=")
+		cmd, allowed = forward, append(allowed, "-p=", "--no-detect")
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}

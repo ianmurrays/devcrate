@@ -33,22 +33,61 @@ func (p forwardPort) String() string {
 	return fmt.Sprintf("%s%s -> localhost:%d", p.target, label, p.local)
 }
 
+// portsConfig is the port settings of `devcontainer read-configuration`.
+type portsConfig struct {
+	Configuration struct {
+		ForwardPorts         []any                     `json:"forwardPorts"`
+		PortsAttributes      map[string]portAttributes `json:"portsAttributes"`
+		OtherPortsAttributes portAttributes            `json:"otherPortsAttributes"`
+	} `json:"configuration"`
+}
+
+type portAttributes struct {
+	Label         string `json:"label"`
+	OnAutoForward string `json:"onAutoForward"`
+}
+
+// parsePortsConfig parses read-configuration output; nil is no config.
+func parsePortsConfig(config []byte) (portsConfig, error) {
+	var cfg portsConfig
+	if config != nil {
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return cfg, fmt.Errorf("reading devcontainer.json: %w", err)
+		}
+	}
+	return cfg, nil
+}
+
+// autoForward reports whether a detected port is forwarded, and its label.
+// Its attributes come from a portsAttributes key equal to the port, else a
+// "from-to" range key holding it, else otherPortsAttributes; other key
+// kinds (host:port, regexes) are not supported.
+func (cfg portsConfig) autoForward(port int) (label string, ok bool) {
+	attrs, found := cfg.Configuration.PortsAttributes[strconv.Itoa(port)]
+	for key, a := range cfg.Configuration.PortsAttributes {
+		from, to, isRange := strings.Cut(key, "-")
+		lo, err1 := strconv.Atoi(from)
+		hi, err2 := strconv.Atoi(to)
+		if !found && isRange && err1 == nil && err2 == nil && lo <= port && port <= hi {
+			attrs, found = a, true
+		}
+	}
+	if !found {
+		attrs = cfg.Configuration.OtherPortsAttributes
+	}
+	if attrs.OnAutoForward == "ignore" {
+		return "", false
+	}
+	return attrs.Label, true
+}
+
 // forwardPorts is the devcontainer's forwardPorts plus -p specs
 // (<remote> or <local>:<remote>), labelled from portsAttributes. config is
 // `devcontainer read-configuration` output, nil when there is none.
 func forwardPorts(config []byte, specs []string) ([]forwardPort, error) {
-	var cfg struct {
-		Configuration struct {
-			ForwardPorts    []any `json:"forwardPorts"`
-			PortsAttributes map[string]struct {
-				Label string `json:"label"`
-			} `json:"portsAttributes"`
-		} `json:"configuration"`
-	}
-	if config != nil {
-		if err := json.Unmarshal(config, &cfg); err != nil {
-			return nil, fmt.Errorf("reading devcontainer.json: %w", err)
-		}
+	cfg, err := parsePortsConfig(config)
+	if err != nil {
+		return nil, err
 	}
 	var ports []forwardPort
 	add := func(target string, local int) error {
@@ -147,21 +186,26 @@ devcontainer read-configuration --workspace-folder . < /dev/null`
 	if err != nil {
 		return err
 	}
-	if len(ports) == 0 {
+	detect := flags["--no-detect"] == ""
+	if len(ports) == 0 && !detect {
 		return errors.New("nothing to forward: add forwardPorts to devcontainer.json or pass -p <port>")
 	}
 
+	explicit := map[string]bool{}
 	for _, p := range ports {
-		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p.local))
-		if errors.Is(err, syscall.EADDRINUSE) {
-			free := p.local + 1
-			fmt.Fprintf(os.Stderr, "devcrate: localhost:%d is in use; not forwarding %s (pick another local port with -p %d:%s)\n", p.local, p.target, free, p.target)
-			continue
-		} else if err != nil {
+		explicit[p.target] = true
+		ln, err := listen(p)
+		if err != nil {
 			return err
 		}
-		fmt.Println(p)
-		go serve(client, ln, p)
+		if ln != nil {
+			fmt.Println(p)
+			go serve(client, ln, p)
+		}
+	}
+	if detect {
+		attrs, _ := parsePortsConfig(cfg) // forwardPorts parsed it already
+		go detectPorts(client, attrs, explicit)
 	}
 
 	go keepalive(client)
@@ -170,6 +214,82 @@ devcontainer read-configuration --workspace-folder . < /dev/null`
 		err = errors.New("closed by the VM")
 	}
 	return fmt.Errorf("connection to %s lost: %w", env.Name, err)
+}
+
+// listen binds p's local port. A busy one is skipped with a warning: nil,
+// nil.
+func listen(p forwardPort) (net.Listener, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p.local))
+	if errors.Is(err, syscall.EADDRINUSE) {
+		free := p.local + 1
+		fmt.Fprintf(os.Stderr, "devcrate: localhost:%d is in use; not forwarding %s (pick another local port with -p %d:%s)\n", p.local, p.target, free, p.target)
+		return nil, nil
+	}
+	return ln, err
+}
+
+// detectPorts forwards the ports the Agent's `ports --watch` reports
+// listening, unless explicit or ignored by onAutoForward, and closes them
+// when they stop listening. A busy local port is not retried until its
+// port stops listening.
+func detectPorts(client *ssh.Client, cfg portsConfig, explicit map[string]bool) {
+	s, err := client.NewSession()
+	if err != nil {
+		return // the connection is gone; forward is exiting
+	}
+	defer s.Close()
+	out, err := s.StdoutPipe()
+	if err != nil {
+		return
+	}
+	var stderr bytes.Buffer
+	s.Stderr = &stderr
+	if err := s.Start("/usr/local/lib/devcrate/devcrate-agent ports --watch"); err != nil {
+		return
+	}
+	forwarded := map[int]net.Listener{} // nil: skipped, local port busy
+	events := json.NewDecoder(out)
+	for {
+		var ev struct {
+			Port int  `json:"port"`
+			Open bool `json:"open"`
+		}
+		if events.Decode(&ev) != nil {
+			break
+		}
+		target := strconv.Itoa(ev.Port)
+		if explicit[target] {
+			continue
+		}
+		ln, seen := forwarded[ev.Port]
+		if !ev.Open {
+			delete(forwarded, ev.Port)
+			if ln != nil {
+				ln.Close() // open connections drain on their own sessions
+				fmt.Printf("%d closed\n", ev.Port)
+			}
+			continue
+		}
+		label, ok := cfg.autoForward(ev.Port)
+		if seen || !ok {
+			continue
+		}
+		p := forwardPort{target: target, local: ev.Port, label: label}
+		ln, err := listen(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "devcrate: not forwarding %s: %v\n", target, err)
+		}
+		forwarded[ev.Port] = ln
+		if ln != nil {
+			fmt.Println(p)
+			go serve(client, ln, p)
+		}
+	}
+	if s.Wait() != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			fmt.Fprintf(os.Stderr, "devcrate: port detection stopped: %s\n", msg)
+		}
+	}
 }
 
 // serve pipes each connection on ln to p.target through the Agent.

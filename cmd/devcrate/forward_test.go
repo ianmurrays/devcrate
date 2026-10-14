@@ -27,6 +27,50 @@ func TestForwardPortsMergesConfigAndFlags(t *testing.T) {
 	}
 }
 
+func TestDetectedPortsFollowOnAutoForward(t *testing.T) {
+	cfg, err := parsePortsConfig([]byte(`{"configuration": {
+		"portsAttributes": {
+			"3000": {"label": "web"},
+			"5432": {"onAutoForward": "ignore"},
+			"9000-9010": {"onAutoForward": "ignore", "label": "range"},
+			"db:6000": {"onAutoForward": "ignore"},
+			"^node": {"onAutoForward": "ignore"}
+		}
+	}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for port, want := range map[int]struct {
+		label string
+		ok    bool
+	}{
+		3000: {"web", true}, 5432: {"", false}, 9000: {"", false}, 9010: {"", false},
+		9011: {"", true}, 6000: {"", true}, 8080: {"", true},
+	} {
+		if label, ok := cfg.autoForward(port); label != want.label || ok != want.ok {
+			t.Errorf("autoForward(%d) = %q, %v; want %q, %v", port, label, ok, want.label, want.ok)
+		}
+	}
+}
+
+func TestOtherPortsAttributesIgnoreForwardsOnlyListedPorts(t *testing.T) {
+	cfg, err := parsePortsConfig([]byte(`{"configuration": {
+		"portsAttributes": {"3000": {"label": "web"}, "4000-4001": {}},
+		"otherPortsAttributes": {"onAutoForward": "ignore"}
+	}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for port, want := range map[int]bool{3000: true, 4001: true, 3001: false} {
+		if _, ok := cfg.autoForward(port); ok != want {
+			t.Errorf("autoForward(%d) = %v, want %v", port, ok, want)
+		}
+	}
+	if _, ok := (portsConfig{}).autoForward(3000); !ok {
+		t.Error("without a devcontainer.json every detected port is forwarded")
+	}
+}
+
 func TestForwardPortsWithoutDevcontainer(t *testing.T) {
 	got, err := forwardPorts(nil, []string{"22"})
 	if err != nil {
