@@ -131,6 +131,23 @@ func (e *Env) WriteFile(rel, content string) {
 	}
 }
 
+// Push commits the local clone's working tree and pushes it to the bare repo
+// the VM clones.
+func (e *Env) Push() {
+	e.t.Helper()
+	bare := filepath.Join(gitRoot, e.Name+".git")
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"-c", "user.email=e2e@devcrate", "-c", "user.name=e2e", "commit", "-q", "-m", "change"},
+		{"push", "-q", bare, "HEAD:main"},
+		{"-C", bare, "update-server-info"},
+	} {
+		if err := sh(e.Dir, "git", args...); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
 // UserConfig writes the isolated HOME's ~/.config/devcrate/config.toml.
 func (e *Env) UserConfig(content string) {
 	e.t.Helper()
