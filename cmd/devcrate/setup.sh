@@ -59,10 +59,22 @@ fi
 # Docker's and containerd's storage live on the volume (ADR 0004), so images
 # and the devcontainer survive a Stop. Restart them only when that changes.
 restart=
-daemon_json="{\"data-root\": \"$state/docker\"}"
-if [ "$(cat /etc/docker/daemon.json 2>/dev/null)" != "$daemon_json" ]; then
-	mkdir -p /etc/docker
-	echo "$daemon_json" > /etc/docker/daemon.json
+# Only data-root is set in daemon.json; its other settings are kept. sed, as
+# there may be no JSON tool on the VM.
+daemon_json=/etc/docker/daemon.json
+data_root="\"data-root\": \"$state/docker\""
+mkdir -p /etc/docker
+if grep -q '"data-root"' "$daemon_json" 2>/dev/null; then
+	sed "s|\"data-root\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|$data_root|" "$daemon_json"
+elif grep -q '[^{}[:space:]]' "$daemon_json" 2>/dev/null; then
+	sed "0,/{/s|{|{$data_root, |" "$daemon_json"
+else
+	echo "{$data_root}"
+fi > "$daemon_json.new"
+if cmp -s "$daemon_json.new" "$daemon_json"; then
+	rm "$daemon_json.new"
+else
+	mv "$daemon_json.new" "$daemon_json"
 	restart=1
 fi
 containerd_root="root = \"$state/containerd\""

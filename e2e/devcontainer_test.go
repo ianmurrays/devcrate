@@ -193,3 +193,30 @@ func TestUpFailsWhenStorageIsNotOnTheVolume(t *testing.T) {
 		})
 	}
 }
+
+func TestUpKeepsOtherDockerDaemonSettings(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up exit %d", r.Code)
+	}
+	// The fake writes the harness's registry mirror into daemon.json at boot.
+	if r := e.Devcrate("ssh", "--", "docker info -f '{{.RegistryConfig.Mirrors}}'"); r.Stdout != "["+mirrorURL+"/]\n" {
+		t.Errorf("Docker's registry mirrors = %q exit %d, want [%s/]", r.Stdout, r.Code, mirrorURL)
+	}
+	// A snapshot image's own daemon.json: a user setting next to the default
+	// data-root, off the volume.
+	if out, code := e.VM(`printf '{\n  "labels": ["e2e=kept"],\n  "data-root": "/var/lib/docker"\n}\n' > /etc/docker/daemon.json`); code != 0 {
+		t.Fatalf("writing daemon.json: %s", out)
+	}
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("second up exit %d", r.Code)
+	}
+	if r := e.Devcrate("ssh", "--", "docker info -f '{{.Labels}}'"); r.Stdout != "[e2e=kept]\n" {
+		t.Errorf("Docker's labels = %q exit %d, want the one from daemon.json", r.Stdout, r.Code)
+	}
+	r := e.Devcrate("ssh", "--", storageRoots)
+	if r.Code != 0 || r.Stdout != "/var/lib/devcrate/docker\n/var/lib/devcrate/containerd\n" {
+		t.Errorf("storage roots = %q exit %d, want both under /var/lib/devcrate", r.Stdout, r.Code)
+	}
+}

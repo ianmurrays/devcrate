@@ -29,6 +29,7 @@ var (
 	gitBaseURL string // as seen from inside the VM
 	gitPort    int
 	vmImage    string
+	mirrorURL  string // Docker Hub pull-through cache, as seen from inside the VM
 )
 
 func TestMain(m *testing.M) {
@@ -77,7 +78,45 @@ func run(m *testing.M) int {
 	gitPort = ln.Addr().(*net.TCPAddr).Port
 	gitBaseURL = fmt.Sprintf("http://host.docker.internal:%d", gitPort)
 
+	mirrorURL = ensureMirror()
+
 	return m.Run()
+}
+
+// mirrorName is the Docker Hub pull-through cache that every fake VM's
+// dockerd uses as a registry mirror, so parallel runs fetch each image from
+// Hub once instead of using up its anonymous rate limit. It is shared by
+// every test process on this Docker daemon and never removed.
+const mirrorName = "devcrate-e2e-registry-mirror"
+
+// ensureMirror starts the mirror if no test process has, and returns its URL
+// as seen from inside a fake VM.
+func ensureMirror() string {
+	// Fails with a name conflict when another process created it first. The
+	// image is ECR's copy of Docker's library one, so starting the mirror
+	// never needs Hub quota.
+	exec.Command("docker", "run", "-d", "--name", mirrorName,
+		"--label", "devcrate.e2e.mirror=1", "--restart", "unless-stopped",
+		"-p", "127.0.0.1::5000",
+		"-e", "REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io",
+		"public.ecr.aws/docker/library/registry:2").Run()
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		exec.Command("docker", "start", mirrorName).Run()
+		out, err := exec.Command("docker", "port", mirrorName, "5000/tcp").Output()
+		if err == nil {
+			hostPort := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+			port := hostPort[strings.LastIndex(hostPort, ":")+1:]
+			if resp, err := http.Get("http://127.0.0.1:" + port + "/v2/"); err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return "http://host.docker.internal:" + port
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			panic(fmt.Sprintf("registry mirror %s did not come up: docker port: %v %s", mirrorName, err, out))
+		}
+	}
 }
 
 // Env is one test's Environment: a unique name, an isolated HOME, and a local
@@ -240,6 +279,7 @@ func (e *Env) Command(args ...string) *exec.Cmd {
 		"HOME="+e.Home,
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"DEVCRATE_FAKE_IMAGE="+vmImage,
+		"DEVCRATE_FAKE_REGISTRY_MIRROR="+mirrorURL,
 	)
 	cmd.Stdout, cmd.Stderr = &syncBuffer{}, &syncBuffer{}
 	return cmd

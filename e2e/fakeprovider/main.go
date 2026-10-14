@@ -5,6 +5,9 @@
 //
 // A stopped Environment is its volume with no container.
 //
+// $DEVCRATE_FAKE_REGISTRY_MIRROR, when set, becomes the VM's
+// /etc/docker/daemon.json registry-mirrors at boot.
+//
 // Test plumbing: the option `fail = "<verb>"` makes that verb fail, and
 // `busy_while = "<host path>"` makes status report busy while that file exists.
 package main
@@ -105,6 +108,12 @@ func up(req request) result {
 	// Boot: wait for systemd, then do what a cloud does with ssh_public_key
 	// and user_data. Exit code is non-zero when "degraded"; that's fine here.
 	exec.Command("docker", "exec", c, "systemctl", "is-system-running", "--wait").Run()
+	// The image's own Docker settings, read by dockerd once setup restarts it:
+	// pull Hub images through the harness's cache.
+	if mirror := os.Getenv("DEVCRATE_FAKE_REGISTRY_MIRROR"); mirror != "" {
+		docker(strings.NewReader(`{"registry-mirrors": ["`+mirror+`"]}`+"\n"), "exec", "-i", c, "sh", "-c",
+			"mkdir -p /etc/docker && cat > /etc/docker/daemon.json")
+	}
 	docker(strings.NewReader(req.SSHPublicKey+"\n"), "exec", "-i", c, "sh", "-c",
 		"mkdir -p /root/.ssh && cat > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys")
 	docker(strings.NewReader(req.UserData), "exec", "-i", c, "sh", "-s")
