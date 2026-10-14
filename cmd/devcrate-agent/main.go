@@ -261,6 +261,11 @@ func setupExited() time.Time {
 // selfStop quiesces the volume and runs the Provider's self-stop script. It
 // returns only if the script failed (on success the VM is gone).
 func selfStop() error {
+	// After a reboot (not a Stop) the credential is gone from tmpfs until the
+	// next `up`; don't take Docker down for nothing.
+	if _, err := os.Stat(selfStopEnv); err != nil {
+		return fmt.Errorf("no Self-stop credential on the VM (%v); the next devcrate up pushes it", err)
+	}
 	steps := []string{
 		`ids=$(docker ps -q); if [ -n "$ids" ]; then docker stop $ids; fi`,
 		// docker.socket too, or socket activation restarts dockerd.

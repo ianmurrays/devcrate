@@ -86,11 +86,17 @@ func TestOpenSSHSessionKeepsEnvironmentRunning(t *testing.T) {
 func TestRunningSetupKeepsEnvironmentRunning(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
-	e.WriteFile(".devcrate.toml", "provider = \"fake\"\nidle_timeout = \"3s\"\n")
+	// Setup holds the lock the Agent checks (a script setup runs sees it held).
+	e.WriteFile("probe.sh", "flock -n /run/devcrate/setup.lock true && echo unlocked > /var/lib/devcrate/probe || echo locked > /var/lib/devcrate/probe\n")
+	e.WriteFile(".devcrate.toml", "provider = \"fake\"\nidle_timeout = \"3s\"\nsetup_script = \"probe.sh\"\n")
+	e.Push()
 	if r := e.Devcrate("up"); r.Code != 0 {
 		t.Fatalf("up exit %d", r.Code)
 	}
-	// A setup still running with nobody connected holds the lock setup.sh takes.
+	if out, _ := e.VM("cat /var/lib/devcrate/probe"); out != "locked\n" {
+		t.Errorf("setup lock seen from setup's own script = %q, want locked", out)
+	}
+	// A setup still running with nobody connected: hold the same lock.
 	if out, err := exec.Command("docker", "exec", "-d", e.Container(), "flock", "/run/devcrate/setup.lock", "sleep", "12").CombinedOutput(); err != nil {
 		t.Fatalf("holding the setup lock: %v %s", err, out)
 	}
