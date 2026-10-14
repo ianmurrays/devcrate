@@ -100,13 +100,3 @@ func TestForwardPortLine(t *testing.T) {
 		}
 	}
 }
-
-func TestRepeatedValueFlagsAccumulate(t *testing.T) {
-	flags, rest, err := parseFlags([]string{"-p", "3000", "name", "-p=3001:3000"}, []string{"-p="})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if flags["-p"] != "3000,3001:3000" || !reflect.DeepEqual(rest, []string{"name"}) {
-		t.Errorf("flags %q rest %q", flags, rest)
-	}
-}

@@ -148,7 +148,7 @@ func forwardPorts(config []byte, specs []string) ([]forwardPort, error) {
 func forward(flags map[string]string, args []string) error {
 	var specs []string
 	if flags["-p"] != "" {
-		specs = strings.Split(flags["-p"], ",")
+		specs = strings.Split(flags["-p"], "\n")
 	}
 	if _, err := forwardPorts(nil, specs); err != nil { // fail before connecting
 		return err

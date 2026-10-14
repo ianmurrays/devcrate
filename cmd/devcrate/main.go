@@ -89,7 +89,8 @@ func run(args []string) error {
 
 // parseFlags splits the allowed flags from positional arguments. A boolean
 // flag's value is "true"; a value flag (listed as "--name=") takes the next
-// argument or --name=value; repeated, its values are comma-joined.
+// argument or --name=value; repeated, its last value wins, except -p, whose
+// values are newline-joined.
 func parseFlags(args, allowed []string) (map[string]string, []string, error) {
 	flags := map[string]string{}
 	var rest []string
@@ -110,8 +111,8 @@ func parseFlags(args, allowed []string) (map[string]string, []string, error) {
 				}
 				value = args[i]
 			}
-			if flags[name] != "" {
-				value = flags[name] + "," + value
+			if name == "-p" && flags[name] != "" {
+				value = flags[name] + "\n" + value
 			}
 			flags[name] = value
 		default:
