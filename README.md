@@ -2,7 +2,7 @@
 
 A local CLI that runs dev Environments on cloud VMs, stops them when idle, and connects to them over SSH. Run `devcrate up` in a local clone to get an Environment for that repo, and `devcrate status` to see its state (`ready`, `running`, `busy`, `stopped` or `missing`).
 
-Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH` or in `~/.config/devcrate/providers/` that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`).
+Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH`, in `~/.config/devcrate/providers/` or next to the `devcrate` executable, that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`). devcrate ships with the DigitalOcean Provider: see `providers/digitalocean/README.md` for installing `doctl`, the Self-stop token and building the base image.
 
 ## Configuration
 
@@ -83,6 +83,17 @@ devcrate hashes these inputs and stores the hash at `/var/lib/devcrate/devcontai
 The hash does not cover other files in the build context (files a Dockerfile `COPY`s, a Compose file's contents), the digest the `FROM` tag points to, secret values, or any other `devcontainer.json` field: editing `forwardPorts`, `customizations`, `remoteEnv` or a lifecycle command such as `postCreateCommand` does not rebuild. For those, run `devcrate up --rebuild`, which recreates the container even with no config change.
 
 A Rebuild builds on the cached image layers, so only the changed steps rerun. It discards the old container: `postCreateCommand` runs again and the container's home starts fresh. The workspace is on the VM and survives.
+
+## Keep-alive
+
+An Environment stops itself once it has been Idle (no SSH connection, no setup running, no Keep-alive) for `idle_timeout`. To leave work running with nobody connected, hold it with a Keep-alive:
+
+```sh
+devcrate keep-alive [name] 2h        # from the laptop, over SSH
+devcrate-agent keep-alive 2h         # on the VM, e.g. from a script
+```
+
+The duration is Go-style (`90s`, `30m`, `2h30m`). The hold ends on its own: the Environment then stops after a further `idle_timeout` with nobody connected. Each call replaces the previous hold, so a shorter one cuts it short. The hold lives in tmpfs (`/run/devcrate/keep-alive`), so a reboot or Stop drops it. `devcrate keep-alive` never starts a stopped Environment and fails like `devcrate ssh` does.
 
 ## Build
 

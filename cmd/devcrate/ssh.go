@@ -31,21 +31,9 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if env.provider == nil {
-		return env.missing()
-	}
-	res, err := env.provider.Status(env.request())
+	res, err := env.running()
 	if err != nil {
 		return err
-	}
-	switch res.State {
-	case "running":
-	case "stopped":
-		return fmt.Errorf("%s is stopped; run devcrate up in its repo", env.Name)
-	case "not_found":
-		return fmt.Errorf("no Environment named %s", env.Name)
-	default:
-		return fmt.Errorf("%s is %s; try again shortly", env.Name, res.State)
 	}
 	// Connecting first pins the host key (on a laptop that has never run up
 	// for it) and fails clearly when the VM is unreachable.
@@ -53,8 +41,9 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to %s: %w", env.Name, err)
 	}
+	err = printAgentError(client, false)
 	tty := len(command) == 0 && term.IsTerminal(int(os.Stdin.Fd()))
-	if flags["--container"] != "" {
+	if err == nil && flags["--container"] != "" {
 		command, err = env.containerCommand(client, command, tty)
 	}
 	client.Close()
@@ -80,6 +69,57 @@ func sshCmd(flags map[string]string, args []string) error {
 		"-o", "HostKeyAlias="+env.alias(), "-o", "UserKnownHostsFile="+filepath.Join(dir, "known_hosts"),
 		"-p", strconv.Itoa(res.Port), "-l", res.User, "--", res.Host)
 	return syscall.Exec(bin, append(argv, command...), os.Environ())
+}
+
+// running returns the Environment's VM, failing unless it is running. It
+// never starts the Environment.
+func (e *environment) running() (provider.Result, error) {
+	if e.provider == nil {
+		return provider.Result{}, e.missing()
+	}
+	res, err := e.provider.Status(e.request())
+	if err != nil {
+		return res, err
+	}
+	switch res.State {
+	case "running":
+		return res, nil
+	case "stopped":
+		return res, fmt.Errorf("%s is stopped; run devcrate up in its repo", e.Name)
+	case "not_found":
+		return res, fmt.Errorf("no Environment named %s", e.Name)
+	default:
+		return res, fmt.Errorf("%s is %s; try again shortly", e.Name, res.State)
+	}
+}
+
+// keepAlive holds the running Environment awake for a duration, through the
+// Agent on its VM.
+func keepAlive(flags map[string]string, args []string) error {
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+	d, err := time.ParseDuration(args[len(args)-1])
+	if err != nil {
+		return fmt.Errorf("keep-alive: %w", err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("keep-alive needs a positive duration, not %s", d)
+	}
+	env, err := resolve(flags["--provider"], args[:len(args)-1])
+	if err != nil {
+		return err
+	}
+	res, err := env.running()
+	if err != nil {
+		return err
+	}
+	client, err := env.dial(res, 0)
+	if err != nil {
+		return fmt.Errorf("connecting to %s: %w", env.Name, err)
+	}
+	defer client.Close()
+	return remote.Run(client, "/usr/local/lib/devcrate/devcrate-agent keep-alive "+d.String(), nil, os.Stdout, os.Stderr)
 }
 
 // containerCommand wraps command (a login shell when empty) in a docker exec

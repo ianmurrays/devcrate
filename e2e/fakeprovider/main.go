@@ -7,6 +7,11 @@
 //
 // Test plumbing: the option `fail = "<verb>"` makes that verb fail, and
 // `busy_while = "<host path>"` makes status report busy while that file exists.
+// `no_self_stop_env = true` makes up return no self_stop_env, and
+// `self_stop_fails = true` makes the self-stop script fail on the VM.
+//
+// Self-stop: the VM reaches the host's Docker through its socket, mounted at
+// hostDocker, and the script removes its own container, keeping the volume.
 package main
 
 import (
@@ -31,7 +36,12 @@ type result struct {
 	Host  string `json:"host,omitempty"`
 	User  string `json:"user,omitempty"`
 	Port  int    `json:"port,omitempty"`
+
+	SelfStopEnv map[string]string `json:"self_stop_env,omitempty"`
 }
+
+// hostDocker is where the host's Docker socket is mounted in the VM.
+const hostDocker = "/devcrate-host-docker.sock"
 
 func main() {
 	if len(os.Args) != 2 {
@@ -48,7 +58,9 @@ func main() {
 	var out any
 	switch verb {
 	case "up":
-		out = up(req)
+		res := up(req)
+		res.SelfStopEnv = selfStopEnv(req)
+		out = res
 	case "status":
 		out = status(req.EnvironmentID)
 		if path, ok := req.Options["busy_while"].(string); ok {
@@ -58,6 +70,12 @@ func main() {
 		}
 	case "list":
 		out = list()
+	case "self-stop":
+		script := "#!/bin/sh\nexec docker rm -f -v \"$FAKE_VM\"\n"
+		if req.Options["self_stop_fails"] == true {
+			script = "#!/bin/sh\necho 'fake: self-stop failing as asked' >&2\nexit 1\n"
+		}
+		out = map[string]string{"script": script}
 	case "stop":
 		// A stopped fake VM has no container, only its volume, like a
 		// destroyed droplet with its block volume left behind.
@@ -93,6 +111,10 @@ func up(req request) result {
 			"--privileged", "--cgroupns=private",
 			"--tmpfs", "/run", "--tmpfs", "/run/lock",
 			"-v", c + ":/var/lib/devcrate",
+			// A second mount of the volume and an fstab entry, so that the
+			// Agent can re-mount /var/lib/devcrate as on a cloud.
+			"-v", c + ":/mnt/devcrate-volume",
+			"-v", "/var/run/docker.sock:" + hostDocker,
 			// dockerd can't put overlayfs on the container's overlay rootfs.
 			"-v", "/var/lib/docker", "-v", "/var/lib/containerd",
 			"-p", "127.0.0.1::22",
@@ -107,8 +129,26 @@ func up(req request) result {
 	exec.Command("docker", "exec", c, "systemctl", "is-system-running", "--wait").Run()
 	docker(strings.NewReader(req.SSHPublicKey+"\n"), "exec", "-i", c, "sh", "-c",
 		"mkdir -p /root/.ssh && cat > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys")
-	docker(strings.NewReader(req.UserData), "exec", "-i", c, "sh", "-s")
+	// Kept at /var/lib/cloud/user-data (as cloud-init does), so tests can
+	// check what it holds.
+	docker(strings.NewReader(req.UserData), "exec", "-i", c, "sh", "-c",
+		"grep -q devcrate-volume /etc/fstab || echo '/mnt/devcrate-volume /var/lib/devcrate none bind 0 0' >> /etc/fstab; "+
+			"mkdir -p /var/lib/cloud && cat > /var/lib/cloud/user-data && sh /var/lib/cloud/user-data")
 	return status(req.EnvironmentID)
+}
+
+// selfStopEnv is what the self-stop script needs: how to reach the host's
+// Docker and which container to remove (plus the token option, if any, so
+// tests can follow a secret).
+func selfStopEnv(req request) map[string]string {
+	if req.Options["no_self_stop_env"] == true {
+		return nil
+	}
+	env := map[string]string{"DOCKER_HOST": "unix://" + hostDocker, "FAKE_VM": name(req.EnvironmentID)}
+	if token, ok := req.Options["token"].(string); ok {
+		env["FAKE_TOKEN"] = token
+	}
+	return env
 }
 
 func status(env string) result {
