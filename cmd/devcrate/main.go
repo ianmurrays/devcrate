@@ -27,10 +27,15 @@ import (
 )
 
 var (
+	//go:embed volume.sh
+	volumeScript string
 	//go:embed setup.sh
-	setupScript string
+	setupSh string
 	//go:embed userdata.sh
-	userData string
+	userDataSh string
+	// Both put the volume's state in place with volume.sh's function.
+	setupScript = volumeScript + setupSh
+	userData    = volumeScript + userDataSh
 )
 
 const usage = "usage: devcrate up [--rebuild] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
@@ -89,7 +94,8 @@ func run(args []string) error {
 
 // parseFlags splits the allowed flags from positional arguments. A boolean
 // flag's value is "true"; a value flag (listed as "--name=") takes the next
-// argument or --name=value; repeated, its values are comma-joined.
+// argument or --name=value; repeated, its last value wins, except -p, whose
+// values are newline-joined.
 func parseFlags(args, allowed []string) (map[string]string, []string, error) {
 	flags := map[string]string{}
 	var rest []string
@@ -110,8 +116,8 @@ func parseFlags(args, allowed []string) (map[string]string, []string, error) {
 				}
 				value = args[i]
 			}
-			if flags[name] != "" {
-				value = flags[name] + "," + value
+			if name == "-p" && flags[name] != "" {
+				value = flags[name] + "\n" + value
 			}
 			flags[name] = value
 		default:
@@ -144,7 +150,7 @@ func up(flags map[string]string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if res.State != "busy" {
+		if res.State != provider.Busy {
 			break
 		}
 		if !waited {
@@ -153,16 +159,27 @@ func up(flags map[string]string, args []string) error {
 		time.Sleep(busyPoll)
 	}
 
-	fmt.Printf("creating %s…\n", env.Name)
+	// Idle stop needs the Provider's self-stop script, and the verb fails
+	// when no Self-stop credential is configured: ask before Up creates
+	// anything.
+	noCredential := fmt.Sprintf("so %s could not stop itself when Idle: configure the Provider's Self-stop credential (see its README), or set idle_timeout = 0 to turn idle stop off", env.Name)
+	var selfStop string
+	if env.idleTimeout != 0 {
+		if selfStop, err = env.provider.SelfStop(env.request()); err != nil {
+			return fmt.Errorf("%w, %s", err, noCredential)
+		}
+	}
+
+	fmt.Println("creating VM…") // "droplet" on DigitalOcean; Providers name it differently
 	res, err := env.provider.Up(env.request())
 	if err != nil {
 		return err
 	}
-	if res.State != "running" {
+	if res.State != provider.Running {
 		return fmt.Errorf("provider %s up returned state %q, want running", env.provider.Name, res.State)
 	}
 	if env.idleTimeout != 0 && len(res.SelfStopEnv) == 0 {
-		return fmt.Errorf("provider %s returned no self_stop_env, so %s could not stop itself when Idle: configure the Provider's Self-stop credential (see its README), or set idle_timeout = 0 to turn idle stop off", env.provider.Name, env.Name)
+		return fmt.Errorf("provider %s returned no self_stop_env, %s", env.provider.Name, noCredential)
 	}
 
 	fmt.Println("waiting for SSH…")
@@ -179,7 +196,7 @@ func up(flags map[string]string, args []string) error {
 		return err
 	}
 
-	if err := env.installAgent(client, res); err != nil {
+	if err := env.installAgent(client, res, selfStop); err != nil {
 		return fmt.Errorf("installing the Agent: %w", err)
 	}
 
@@ -277,11 +294,11 @@ func status(flags map[string]string, args []string) error {
 		if err != nil {
 			return err
 		}
-		state = res.State
-		switch state {
-		case "not_found":
+		state = string(res.State)
+		switch res.State {
+		case provider.NotFound:
 			state = "missing"
-		case "running":
+		case provider.Running:
 			if client, err := env.dial(res, 0); err == nil {
 				if remote.Run(client, "test -f /run/devcrate/ready", nil, nil, nil) == nil {
 					state = "ready"
@@ -308,8 +325,12 @@ func list(flags map[string]string, _ []string) error {
 	if flags["--provider"] != "" {
 		names = []string{flags["--provider"]}
 	} else if ctx, err := repo.Load("."); err == nil {
-		if _, ok := cfg.Providers[ctx.Provider]; !ok {
-			names = append(names, ctx.Provider)
+		p := ctx.Provider
+		if p == "" {
+			p = cfg.Provider
+		}
+		if _, ok := cfg.Providers[p]; !ok && p != "" {
+			names = append(names, p)
 		}
 	}
 	type row struct {
@@ -328,7 +349,7 @@ func list(flags map[string]string, _ []string) error {
 			return err
 		}
 		for _, it := range items {
-			rows = append(rows, row{it.EnvironmentID, name, it.State})
+			rows = append(rows, row{it.EnvironmentID, name, string(it.State)})
 		}
 	}
 	if flags["--json"] != "" {
@@ -375,12 +396,17 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 	if err != nil {
 		return nil, err
 	}
-	if providerName == "" {
-		providerName = ctx.Provider
-	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
+	}
+	for _, p := range []string{ctx.Provider, cfg.Provider} { // repo wins
+		if providerName == "" {
+			providerName = p
+		}
+	}
+	if providerName == "" {
+		return nil, fmt.Errorf(`no provider set: add provider = "<name>" to .devcrate.toml or %s`, filepath.Join(cfg.dir, "config.toml"))
 	}
 	p, err := provider.Find(providerName, cfg.dir)
 	if err != nil {
@@ -479,7 +505,7 @@ func resolve(providerName string, args []string) (*environment, error) {
 		if err != nil {
 			return nil, err
 		}
-		if res.State != "not_found" {
+		if res.State != provider.NotFound {
 			found = append(found, e)
 		}
 	}
@@ -512,6 +538,7 @@ func (e *environment) request() provider.Request {
 // config is the user config, ~/.config/devcrate/config.toml.
 type config struct {
 	dir          string                    // ~/.config/devcrate
+	Provider     string                    `toml:"provider"` // used when .devcrate.toml sets none
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
 	ForwardEnv   []string                  `toml:"forward_env"`

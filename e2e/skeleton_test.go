@@ -26,7 +26,7 @@ func TestUpBringsEnvironmentToReady(t *testing.T) {
 		t.Fatalf("up exit %d", r.Code)
 	}
 	wantLines(t, r.Stdout,
-		"creating "+e.Name+"…",
+		"creating VM…",
 		"waiting for SSH…",
 		"running setup…",
 		"ready: ssh devcrate-"+e.Name+"  (or: devcrate ssh "+e.Name+")",

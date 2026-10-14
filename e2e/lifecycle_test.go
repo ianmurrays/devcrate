@@ -44,6 +44,36 @@ func TestStopThenUpKeepsWorkspace(t *testing.T) {
 	}
 }
 
+// A VM that was powered on rather than created may not rerun user data:
+// setup itself puts the host keys and /root from the volume in place.
+func TestUpRestoresVolumeStateWithoutUserData(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up exit %d", r.Code)
+	}
+	e.VM("echo kept > /root/scratch")
+	// As if boot had not run user data: /root is the VM's own and the
+	// volume has no host keys.
+	if out, code := e.VM("umount /root && rm /var/lib/devcrate/ssh/ssh_host_*"); code != 0 {
+		t.Fatalf("undoing user data: %s", out)
+	}
+
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("second up exit %d", r.Code)
+	}
+	if out, code := e.VM("mountpoint -q /root && cat /root/scratch"); code != 0 || out != "kept\n" {
+		t.Errorf("/root after up = %q (exit %d), want the volume's home bind-mounted", out, code)
+	}
+	if out, code := e.VM("for k in /etc/ssh/ssh_host_*; do cmp $k /var/lib/devcrate/ssh/$(basename $k) || exit 1; done"); code != 0 {
+		t.Errorf("host keys on the volume differ from /etc/ssh: %s", out)
+	}
+	// The key devcrate pinned is still the one the VM serves.
+	if r := e.Devcrate("ssh", "--", "true"); r.Code != 0 {
+		t.Errorf("ssh after up exit %d", r.Code)
+	}
+}
+
 func TestDeleteRemovesVMAndVolume(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
@@ -218,7 +248,7 @@ func TestConcurrentUpAndStopAreSerialised(t *testing.T) {
 
 	up := e.Command("up")
 	must(up.Start())
-	e.WaitOutput(up, "creating "+e.Name+"…")
+	e.WaitOutput(up, "creating VM…")
 	stop := e.Command("stop")
 	must(stop.Start())
 	e.WaitOutput(stop, "waiting for another devcrate command on "+e.Name)

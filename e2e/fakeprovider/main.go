@@ -10,7 +10,8 @@
 //
 // Test plumbing: the option `fail = "<verb>"` makes that verb fail, and
 // `busy_while = "<host path>"` makes status report busy while that file exists.
-// `no_self_stop_env = true` makes up return no self_stop_env, and
+// `no_self_stop_env = true` makes up return no self_stop_env and self-stop
+// fail, as when no Self-stop credential is configured, and
 // `self_stop_fails = true` makes the self-stop script fail on the VM.
 //
 // Self-stop: the VM reaches the host's Docker through its socket, mounted at
@@ -74,6 +75,9 @@ func main() {
 	case "list":
 		out = list()
 	case "self-stop":
+		if req.Options["no_self_stop_env"] == true {
+			fail("no Self-stop credential configured (no_self_stop_env)")
+		}
 		script := "#!/bin/sh\nexec docker rm -f -v \"$FAKE_VM\"\n"
 		if req.Options["self_stop_fails"] == true {
 			script = "#!/bin/sh\necho 'fake: self-stop failing as asked' >&2\nexit 1\n"

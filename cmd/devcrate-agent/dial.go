@@ -58,7 +58,7 @@ func dialCmd(args []string) error {
 // devcontainerPid is the running devcontainer's PID on the VM, or "" when
 // the Environment has no devcontainer.
 func devcontainerPid() (string, error) {
-	ps, err := exec.Command("docker", "ps", "-a", "--filter", "label=devcontainer.local_folder="+state+"/workspace",
+	ps, err := exec.Command("docker", "ps", "-a", "--filter", "label=devcontainer.local_folder="+volumeDir+"/workspace",
 		"--format", "{{.ID}} {{.State}}").Output()
 	if err != nil {
 		return "", fmt.Errorf("looking for the devcontainer: %w", err)

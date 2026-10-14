@@ -32,7 +32,7 @@ func TestIdleClockStartsWhenSetupExits(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	c := idleClock{since: t0}
 	if d := c.observe(t0.Add(10*time.Second), true, time.Time{}); d != 0 {
-		t.Errorf("busy: idle %s, want 0", d)
+		t.Errorf("active: idle %s, want 0", d)
 	}
 	// Setup exited at +15 s, between polls.
 	if d := c.observe(t0.Add(20*time.Second), false, t0.Add(15*time.Second)); d != 5*time.Second {

@@ -325,6 +325,19 @@ func TestUpWithoutTokenReturnsNoSelfStopEnv(t *testing.T) {
 	}
 }
 
+// devcrate asks for the self-stop script before up, so without a token it
+// fails before anything is created.
+func TestSelfStopWithoutTokenFails(t *testing.T) {
+	f := newFixture(t)
+	r := f.run("self-stop", "api", map[string]any{"image": "1"})
+	if r.Code == 0 || !strings.Contains(r.Stderr, "digitalocean: no Self-stop token: set token under [providers.digitalocean]") {
+		t.Errorf("exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	if len(f.cloud().Calls) != 0 {
+		t.Errorf("calls made: %v", f.cloud().Calls)
+	}
+}
+
 // The self-stop script, run on the VM with self_stop_env, destroys the
 // droplet it runs on (found through the metadata service) and nothing else.
 func TestSelfStopDeletesOnlyItsOwnDroplet(t *testing.T) {

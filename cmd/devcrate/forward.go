@@ -148,7 +148,7 @@ func forwardPorts(config []byte, specs []string) ([]forwardPort, error) {
 func forward(flags map[string]string, args []string) error {
 	var specs []string
 	if flags["-p"] != "" {
-		specs = strings.Split(flags["-p"], ",")
+		specs = strings.Split(flags["-p"], "\n")
 	}
 	if _, err := forwardPorts(nil, specs); err != nil { // fail before connecting
 		return err
@@ -157,6 +157,13 @@ func forward(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
+	// forward runs until interrupted: it holds the lock only while it sets
+	// up, so stop and other commands still work while it forwards.
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	res, err := env.running()
 	if err != nil {
 		return err
@@ -171,12 +178,14 @@ func forward(flags map[string]string, args []string) error {
 	}
 
 	// The VM's copy of the repo is what runs, so its devcontainer.json counts.
-	var config bytes.Buffer
-	readConfig := `cd /var/lib/devcrate/workspace && { [ -f .devcontainer/devcontainer.json ] || [ -f .devcontainer.json ]; } &&
-PATH=/opt/devcontainers/bin:$PATH && command -v devcontainer >/dev/null &&
+	// Without a devcontainer.json or the CLI it is VM-only: no output.
+	var config, stderr bytes.Buffer
+	readConfig := `cd /var/lib/devcrate/workspace && { [ -f .devcontainer/devcontainer.json ] || [ -f .devcontainer.json ]; } || exit 0
+PATH=/opt/devcontainers/bin:$PATH && command -v devcontainer >/dev/null || exit 0
 devcontainer read-configuration --workspace-folder . < /dev/null`
-	if err := remote.Run(client, readConfig, nil, &config, io.Discard); err != nil {
-		config.Reset() // VM-only: no devcontainer.json or no CLI
+	if err := remote.Run(client, readConfig, nil, &config, &stderr); err != nil {
+		os.Stderr.Write(stderr.Bytes())
+		return fmt.Errorf("reading %s's devcontainer.json on the VM: %w", env.Name, err)
 	}
 	var cfg []byte
 	if config.Len() > 0 {
@@ -208,6 +217,7 @@ devcontainer read-configuration --workspace-folder . < /dev/null`
 		go detectPorts(client, attrs, explicit)
 	}
 
+	unlock()
 	go keepalive(client)
 	err = client.Wait()
 	if err == nil {

@@ -82,6 +82,16 @@ func TestForwardOnStoppedEnvironmentFails(t *testing.T) {
 	}
 }
 
+func TestForwardReportsABrokenDevcontainerConfig(t *testing.T) {
+	t.Parallel()
+	e := newDetectEnv(t, `{"image": "alpine:3.20", "forwardPorts": [3000]}`)
+	e.editWorkspace(".devcontainer/devcontainer.json", `["not", "an", "object"]`)
+	r := e.Devcrate("forward", "--no-detect")
+	if r.Code != 1 || !strings.Contains(r.Stderr, "devcontainer.json") || strings.Contains(r.Stderr, "nothing to forward") {
+		t.Errorf("forward with a broken devcontainer.json = exit %d stderr %q, want exit 1 with the config error", r.Code, r.Stderr)
+	}
+}
+
 func TestForwardInVMOnlyModeDialsOnTheVM(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)

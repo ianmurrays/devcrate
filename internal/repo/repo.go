@@ -20,7 +20,7 @@ import (
 type Context struct {
 	Origin   string         // clone URL
 	Name     string         // Environment name: `name` from .devcrate.toml, else the repo name from Origin
-	Provider string         // `provider` from .devcrate.toml
+	Provider string         // `provider` from .devcrate.toml, "" when unset
 	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
 	// Devcontainer is `devcontainer` from .devcrate.toml, nil when unset.
 	Devcontainer *bool
@@ -109,9 +109,6 @@ func parse(origin, devcrateToml string) (*Context, error) {
 	}
 	c.Provider, _ = c.Options["provider"].(string)
 	delete(c.Options, "provider")
-	if c.Provider == "" {
-		return nil, errors.New(`no provider set: add provider = "<name>" to .devcrate.toml`)
-	}
 	if v, ok := c.Options["devcontainer"]; ok {
 		b, ok := v.(bool)
 		if !ok {

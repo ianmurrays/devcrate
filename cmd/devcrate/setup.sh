@@ -1,5 +1,5 @@
-#!/bin/sh
-# devcrate setup: runs on the VM inside `up`'s SSH session as
+# devcrate setup (sent after volume.sh): runs on the VM inside `up`'s SSH
+# session as
 # `sh -s -- <origin> <devcontainer> <setup_script> <in_container> <rebuild>`,
 # where <devcontainer> is false for a VM-only Environment, <setup_script> is
 # the repo's script (a path in the repo, or empty), <in_container> is true to
@@ -13,8 +13,8 @@ devcontainer=$2
 setup_script=$3
 in_container=$4
 rebuild=$5
-state=/var/lib/devcrate
-workspace=$state/workspace
+volume=/var/lib/devcrate
+workspace=$volume/workspace
 # The devcontainer CLI lives on the root disk, like Docker: a snapshot image
 # can carry both, and a fresh VM installs them.
 cli_prefix=/opt/devcontainers
@@ -48,9 +48,9 @@ rm -f /run/devcrate/ready
 mkdir -p /run/devcrate
 rm -f /run/devcrate/stdout /run/devcrate/stderr
 mkfifo /run/devcrate/stdout /run/devcrate/stderr
-: > "$state/setup.log"
-tee -a "$state/setup.log" < /run/devcrate/stdout &
-tee -a "$state/setup.log" < /run/devcrate/stderr >&2 &
+: > "$volume/setup.log"
+tee -a "$volume/setup.log" < /run/devcrate/stdout &
+tee -a "$volume/setup.log" < /run/devcrate/stderr >&2 &
 exec > /run/devcrate/stdout 2> /run/devcrate/stderr
 rm /run/devcrate/stdout /run/devcrate/stderr
 
@@ -62,6 +62,10 @@ flock 9
 # Also let the tees drain before the session ends; the exit status is kept.
 trap 'touch /run/devcrate/setup.lock; exec >&- 2>&-; wait' EXIT
 
+# The volume's sshd host keys and /root, in case boot did not put them in
+# place (volume.sh).
+restore_from_volume keep
+
 # A sleeping laptop's session drops after about 3 minutes, so it stops
 # holding the Environment awake. devcrate forward opens one session per
 # forwarded TCP connection, more than the default 10.
@@ -69,6 +73,9 @@ sshd_conf=$(printf 'ClientAliveInterval 60\nClientAliveCountMax 3\nMaxSessions 2
 if [ "$(cat /etc/ssh/sshd_config.d/devcrate.conf 2>/dev/null)" != "$sshd_conf" ]; then
 	mkdir -p /etc/ssh/sshd_config.d
 	echo "$sshd_conf" > /etc/ssh/sshd_config.d/devcrate.conf
+	ssh_changed=1
+fi
+if [ -n "$ssh_changed" ]; then
 	systemctl reload ssh 2>/dev/null || systemctl reload sshd
 fi
 
@@ -101,7 +108,7 @@ restart=
 # Only data-root is set in daemon.json; its other settings are kept. sed, as
 # there may be no JSON tool on the VM.
 daemon_json=/etc/docker/daemon.json
-data_root="\"data-root\": \"$state/docker\""
+data_root="\"data-root\": \"$volume/docker\""
 mkdir -p /etc/docker
 if grep -q '"data-root"' "$daemon_json" 2>/dev/null; then
 	sed "s|\"data-root\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|$data_root|" "$daemon_json"
@@ -116,7 +123,7 @@ else
 	mv "$daemon_json.new" "$daemon_json"
 	restart=1
 fi
-containerd_root="root = \"$state/containerd\""
+containerd_root="root = \"$volume/containerd\""
 if ! grep -qx "$containerd_root" /etc/containerd/config.toml 2>/dev/null; then
 	mkdir -p /etc/containerd
 	# A top-level key must come before any [table].
@@ -134,9 +141,9 @@ docker_root=$(readlink -f "$(docker info -f '{{.DockerRootDir}}')")
 containerd_root=$(readlink -f "$(containerd config dump 2>/dev/null | sed -n "s/^root = ['\"]\(.*\)['\"]$/\1/p")")
 for root in "Docker's data-root:$docker_root" "containerd's root:$containerd_root"; do
 	case ${root#*:} in
-	"$state"/*) ;;
+	"$volume"/*) ;;
 	*)
-		echo "devcrate: ${root%%:*} is ${root#*:}, not under $state: images and the devcontainer would be lost at the next Stop" >&2
+		echo "devcrate: ${root%%:*} is ${root#*:}, not under $volume: images and the devcontainer would be lost at the next Stop" >&2
 		exit 1
 		;;
 	esac
@@ -184,7 +191,7 @@ else
 	[ -x "$node" ] || node=node
 	hash=$(config=$config "$node" -e "$hash_js" "$(uname -m)" < /dev/null)
 	remove=
-	old=$(cat "$state/devcontainer.hash" 2>/dev/null || true)
+	old=$(cat "$volume/devcontainer.hash" 2>/dev/null || true)
 	if [ "$rebuild" = true ] || { [ -n "$old" ] && [ "$hash" != "$old" ]; }; then
 		echo "rebuilding the devcontainer…"
 		remove=--remove-existing-container
@@ -202,12 +209,16 @@ else
 	done < "$creds/names"
 	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" --mount "type=bind,source=$agent_dir,target=$agent_dir" $remove "$@" < /dev/null 9>&-
 	# Only after success, so a failed Rebuild is retried by the next up.
-	echo "$hash" > "$state/devcontainer.hash"
+	echo "$hash" > "$volume/devcontainer.hash"
 
 	# The same sourcing and $HOME symlinks as on the VM, for the container
 	# user, who owns the creds (devcrate's later pushes keep that owner).
 	devcontainer exec --workspace-folder "$workspace" sh -c 'echo "$(id -u):$(id -g)"' < /dev/null 9>&- > /run/devcrate/creds-owner
 	chown -R "$(cat /run/devcrate/creds-owner)" /run/devcrate/.creds
+	# The Agent's relay socket is for root and the remoteUser only (0600).
+	if [ -S "$agent_dir/agent.sock" ]; then
+		chown "$(cat /run/devcrate/creds-owner)" "$agent_dir/agent.sock"
+	fi
 	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
 	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh" 9>&-
 	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null 9>&-

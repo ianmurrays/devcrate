@@ -178,6 +178,9 @@ list() {
 # self_stop prints the script the Agent runs on the VM, with self_stop_env
 # ($DIGITALOCEAN_TOKEN) sourced: destroy this droplet, never the volume.
 self_stop() {
+	# devcrate asks for this before up creates anything, so a missing token
+	# fails early.
+	[ -n "$token" ] || die "no Self-stop token: set token under [providers.digitalocean] in ~/.config/devcrate/config.toml (see the Provider's README.md)"
 	jq -n --arg s '#!/bin/sh
 set -eu
 id=$(curl -sSf http://169.254.169.254/metadata/v1/id)

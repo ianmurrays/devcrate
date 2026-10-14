@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -57,7 +59,7 @@ func TestUpWithGitURLOutsideARepo(t *testing.T) {
 	if r.Code != 0 {
 		t.Fatalf("up <git-url> exit %d", r.Code)
 	}
-	wantLines(t, r.Stdout, "creating "+e.Name+"…", "ready: ssh devcrate-"+e.Name+"  (or: devcrate ssh "+e.Name+")")
+	wantLines(t, r.Stdout, "creating VM…", "ready: ssh devcrate-"+e.Name+"  (or: devcrate ssh "+e.Name+")")
 	if out, code := e.VM("cat /var/lib/devcrate/workspace/README.md"); code != 0 || out != "fixture "+e.Name+"\n" {
 		t.Errorf("workspace README = %q (exit %d), want the cloned repo", out, code)
 	}
@@ -126,5 +128,31 @@ func TestNameInRepoConfigOverridesDerivedName(t *testing.T) {
 		if r.Code != 1 || !strings.Contains(r.Stderr, `invalid Environment name "`+bad+`": use only a-z, 0-9 and -, at most 32 characters`) {
 			t.Errorf("status with name %q = exit %d stderr %q, want a clear invalid-name error", bad, r.Code, r.Stderr)
 		}
+	}
+}
+
+func TestProviderFromUserConfigWithoutRepoConfig(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	must(os.Remove(filepath.Join(e.Dir, ".devcrate.toml")))
+
+	r := e.Devcrate("status")
+	if r.Code != 1 || !strings.Contains(r.Stderr, "no provider set") {
+		t.Errorf("status with no provider anywhere = exit %d stderr %q, want a no-provider error", r.Code, r.Stderr)
+	}
+
+	e.UserConfig("provider = \"fake\"\n")
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up with the user config's provider = exit %d", r.Code)
+	}
+	if r := e.Devcrate("list"); !regexp.MustCompile(`(?m)^` + e.Name + ` +fake +running$`).MatchString(r.Stdout) {
+		t.Errorf("list has no row %s fake running:\n%s", e.Name, r.Stdout)
+	}
+
+	// The repo's provider wins over the user's.
+	e.UserConfig("provider = \"nonexistent\"\n")
+	e.WriteFile(".devcrate.toml", "provider = \"fake\"\n")
+	if r := e.Devcrate("status"); r.Code != 0 || r.Stdout != "ready\n" {
+		t.Errorf("status with the repo's provider = %q exit %d, want ready", r.Stdout, r.Code)
 	}
 }

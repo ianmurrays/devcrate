@@ -18,6 +18,7 @@ import (
 
 	"github.com/ianmurrays/devcrate/internal/provider"
 	"github.com/ianmurrays/devcrate/internal/remote"
+	"github.com/ianmurrays/devcrate/internal/vm"
 )
 
 // sshCmd replaces devcrate with the system ssh, logged in to the VM as root,
@@ -31,6 +32,13 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The lock covers the credential push and the container lookup, not the
+	// session, so stop and other commands still work while connected.
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock() // on failure; the session itself runs unlocked
 	res, err := env.running()
 	if err != nil {
 		return err
@@ -79,6 +87,7 @@ func sshCmd(flags map[string]string, args []string) error {
 		"-i", filepath.Join(dir, "id_ed25519"), "-o", "IdentitiesOnly=yes",
 		"-o", "HostKeyAlias="+env.alias(), "-o", "UserKnownHostsFile="+filepath.Join(dir, "known_hosts"),
 		"-p", strconv.Itoa(res.Port), "-l", res.User, "--", res.Host)
+	unlock()
 	return syscall.Exec(bin, append(argv, command...), os.Environ())
 }
 
@@ -93,11 +102,11 @@ func (e *environment) running() (provider.Result, error) {
 		return res, err
 	}
 	switch res.State {
-	case "running":
+	case provider.Running:
 		return res, nil
-	case "stopped":
+	case provider.Stopped:
 		return res, fmt.Errorf("%s is stopped; run devcrate up in its repo", e.Name)
-	case "not_found":
+	case provider.NotFound:
 		return res, fmt.Errorf("no Environment named %s", e.Name)
 	default:
 		return res, fmt.Errorf("%s is %s; try again shortly", e.Name, res.State)
@@ -121,6 +130,11 @@ func keepAlive(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	res, err := env.running()
 	if err != nil {
 		return err
@@ -160,17 +174,22 @@ func (e *environment) containerCommand(client *ssh.Client, command []string, tty
 	if len(command) > 0 {
 		script = strings.Join(command, " ") // as ssh would hand it to the VM's shell
 	}
-	flags := "-i"
+	flags := []string{"-i"}
 	if tty {
-		flags = "-it"
+		flags = []string{"-it"}
+	}
+	// The devcontainer's remoteUser, as uid:gid, which setup records.
+	var owner strings.Builder
+	if err := remote.Run(client, "cat "+vm.CredsOwner+" 2>/dev/null || true", nil, &owner, os.Stderr); err != nil {
+		return nil, err
+	}
+	if u := strings.TrimSpace(owner.String()); u != "" {
+		flags = append(flags, "-u", u)
 	}
 	// The Agent's relay to this connection's forwarded agent, if any.
-	return []string{"docker", "exec", flags, "-e", "SSH_AUTH_SOCK=" + containerAgentSock, id, "sh", "-c", shellQuote(script)}, nil
+	argv := append([]string{"docker", "exec"}, flags...)
+	return append(argv, "-e", "SSH_AUTH_SOCK="+vm.AgentSock, id, "sh", "-c", shellQuote(script)), nil
 }
-
-// containerAgentSock is the Agent's SSH-agent relay, bind-mounted into the
-// devcontainer by setup.
-const containerAgentSock = "/run/devcrate/ssh-agent/agent.sock"
 
 // alias is the Environment's SSH host alias and HostKeyAlias.
 func (e *environment) alias() string { return "devcrate-" + e.Name }

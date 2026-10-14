@@ -2,7 +2,25 @@
 
 A local CLI that runs dev Environments on cloud VMs, stops them when idle, and connects to them over SSH. Run `devcrate up` in a local clone to get an Environment for that repo, and `devcrate status` to see its state (`ready`, `running`, `busy`, `stopped` or `missing`).
 
-Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH`, in `~/.config/devcrate/providers/` or next to the `devcrate` executable, that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`). devcrate ships with the DigitalOcean Provider: see `providers/digitalocean/README.md` for installing `doctl`, the Self-stop token and building the base image.
+Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH`, in `~/.config/devcrate/providers/` or next to the `devcrate` executable, that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`). devcrate ships with the DigitalOcean Provider.
+
+## Install
+
+devcrate is three kinds of file that must sit in the same directory (there is no package yet; see [Build](#build)):
+
+- `devcrate`, the CLI you run.
+- `devcrate-agent-linux-amd64` and `devcrate-agent-linux-arm64`, the Agent that `up` pushes to the VM (the one matching the VM's CPU).
+- `devcrate-provider-digitalocean`, the DigitalOcean Provider (`providers/digitalocean/`).
+
+### DigitalOcean
+
+`providers/digitalocean/README.md` has the details. In short:
+
+1. Install `doctl` and `jq`, create a full-access personal access token and run `doctl auth init`. The Provider uses whatever `doctl` is logged in to.
+2. Create a second token with only the `droplet: delete` scope and set it as `token` under `[providers.digitalocean]` in `~/.config/devcrate/config.toml`. The Agent uses it to destroy the droplet when the Environment is Idle (Self-stop). DigitalOcean cannot scope it to one droplet: it can delete every droplet in the team.
+3. Build a base snapshot with Docker and the devcontainer CLI using the README's Packer recipe, and set its ID as `image`. A snapshot is only in the region it was built in; copy it to another with `doctl compute image-action transfer <snapshot-id> --region <region> --wait`.
+
+Docker's images and build cache live on the volume and slowly fill it: free space with `devcrate ssh <name> -- docker system prune`.
 
 ## Configuration
 
@@ -13,19 +31,29 @@ devcrate reads two TOML files and merges them, with the repo's values winning:
 
 ```toml
 # .devcrate.toml
-provider = "digitalocean" # required: which Provider runs this repo's Environment
+provider = "digitalocean" # which Provider runs this repo's Environment (here or in your user config)
 name = "my-app"           # optional: the Environment name (default: the repo name from origin)
+idle_timeout = "1h"       # optional: Stop after this long Idle (default "30m"; 0 turns idle stop off)
+devcontainer = false      # optional: VM-only, even if the repo has a devcontainer.json (default true)
 region = "ams3"           # every other key is a Provider option
 ```
 
 ```toml
 # ~/.config/devcrate/config.toml
+provider = "digitalocean" # used when .devcrate.toml sets none (or there is no .devcrate.toml)
+idle_timeout = "30m"      # default for repos that set none
+devcontainer = true       # default for repos that set none
+
 [providers.digitalocean]
 token = "dop_v1_..."
 region = "nyc3" # used when .devcrate.toml has no region
 ```
 
-The Provider gets its `[providers.<name>]` table overlaid with every `.devcrate.toml` key except `provider` and `name`, unchanged, and validates them itself.
+`provider`, `idle_timeout` and `devcontainer` can be set in either file; `.devcrate.toml` wins. `name` and `setup_script` are repo only. `--provider <name>` overrides both files.
+
+The Provider gets its `[providers.<name>]` table overlaid with every other `.devcrate.toml` key, unchanged, and validates them itself.
+
+`idle_timeout` is a duration such as `"30m"` or `"2h"`. Idle stop needs the Provider's Self-stop credential (DigitalOcean: `token`); without it `up` fails before creating anything, unless `idle_timeout = 0`.
 
 Environment names use only `a-z`, `0-9` and `-`, and are at most 32 characters. If two repos derive the same name, `up` aborts setup in the second one and asks you to set `name` in its `.devcrate.toml`.
 
@@ -103,7 +131,9 @@ A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted
 
 ## Connecting
 
-`devcrate ssh [name]` opens a root shell on the VM, and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment.
+`devcrate ssh [name]` opens a root shell on the VM, and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment. `devcrate ssh --container [name]` does the same inside the running devcontainer, as its `remoteUser`, and fails rather than fall back to the VM when there is none.
+
+The devcontainer CLI runs as root on the VM, so by default it changes a non-root `remoteUser`'s uid to 0 (it matches the uid of the user running it). To keep the `remoteUser`'s own uid, set `"updateRemoteUserUID": false` in `devcontainer.json`.
 
 Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config` (the VM's address changes on every resume), and the first `up` adds `Include ~/.ssh/devcrate_config` to the top of `~/.ssh/config`. So plain `ssh devcrate-<name>` works too, with agent forwarding on. The VM's host key is kept on its volume and pinned in `~/.config/devcrate/known_hosts`, so a resume never causes a host key warning. `delete` removes the block; `stop` leaves it.
 
@@ -131,7 +161,7 @@ devcrate hashes these inputs and stores the hash at `/var/lib/devcrate/devcontai
 
 The hash does not cover other files in the build context (files a Dockerfile `COPY`s, a Compose file's contents), the digest the `FROM` tag points to, secret values, or any other `devcontainer.json` field: editing `forwardPorts`, `customizations`, `remoteEnv` or a lifecycle command such as `postCreateCommand` does not rebuild. For those, run `devcrate up --rebuild`, which recreates the container even with no config change.
 
-A Rebuild builds on the cached image layers, so only the changed steps rerun. It discards the old container: `postCreateCommand` runs again and the container's home starts fresh. The workspace is on the VM and survives.
+A Rebuild builds on the cached image layers, so only the changed steps rerun. It discards the old container: `postCreateCommand` runs again and the container's home starts fresh. The clone is on the VM and survives.
 
 ## Forwarding ports
 
@@ -157,8 +187,15 @@ The duration is Go-style (`90s`, `30m`, `2h30m`). The hold ends on its own: the 
 Requires Go 1.25.
 
 ```sh
-go build ./cmd/devcrate
+mkdir -p dist
+go build -o dist/devcrate ./cmd/devcrate
+for arch in amd64 arm64; do
+	CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o dist/devcrate-agent-linux-$arch ./cmd/devcrate-agent
+done
+cp providers/digitalocean/devcrate-provider-digitalocean dist/
 ```
+
+Then put `dist/` on your `PATH` (or symlink `dist/devcrate` into it: devcrate resolves symlinks to find the files next to it).
 
 ## Test
 

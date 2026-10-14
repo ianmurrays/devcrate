@@ -25,21 +25,22 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ianmurrays/devcrate/internal/vm"
 )
 
 const (
-	state = "/var/lib/devcrate"
+	volumeDir = vm.VolumeDir
 	// pushed is where `up` puts the Agent's files, on the volume.
-	pushed = state + "/agent"
+	pushed = volumeDir + "/agent"
 	// installed is the root-disk copy the unit runs: a binary running from
 	// the volume would keep it from unmounting.
-	installed = "/usr/local/lib/devcrate"
-	unitPath  = "/etc/systemd/system/devcrate-agent.service"
-	// selfStopEnv holds the Provider's self_stop_env (tmpfs, root-only).
-	selfStopEnv = "/run/devcrate/self-stop.env"
+	installed   = "/usr/local/lib/devcrate"
+	unitPath    = "/etc/systemd/system/devcrate-agent.service"
+	selfStopEnv = vm.SelfStopEnv
 	// setupLock is held by setup.sh while it runs and touched when it exits.
 	setupLock  = "/run/devcrate/setup.lock"
-	agentError = state + "/agent-error"
+	agentError = vm.AgentError
 	// keepAlive holds the Keep-alive deadline (tmpfs: a reboot drops it).
 	keepAlive = "/run/devcrate/keep-alive"
 	// onPath links the installed binary so scripts on the VM can run
@@ -48,8 +49,9 @@ const (
 	// agentSock is the stable SSH-agent socket the devcontainer gets (its
 	// directory is bind-mounted in). It relays to the newest live forwarded
 	// agent among those sshd's ~/.ssh/rc records in agentSessions.
-	agentSock     = "/run/devcrate/ssh-agent/agent.sock"
+	agentSock     = vm.AgentSock
 	agentSessions = "/run/devcrate/ssh-agent-sessions"
+	credsOwner    = vm.CredsOwner
 	// sshRC is root's ~/.ssh/rc (on the volume). sshd runs it at the start
 	// of every session, before the command.
 	sshRC = "/root/.ssh/rc"
@@ -207,7 +209,7 @@ func run() error {
 			if until := keepAliveUntil(keepAlive); until.After(notBefore) {
 				notBefore = until
 			}
-			idle := clock.observe(now, busy(), notBefore)
+			idle := clock.observe(now, active(), notBefore)
 			if cfg.IdleTimeout.Duration == 0 || idle < cfg.IdleTimeout.Duration {
 				continue
 			}
@@ -239,8 +241,12 @@ func relayAgent(sock, sessions string) error {
 	if err != nil {
 		return err
 	}
-	// The container user may not be root.
-	if err := os.Chmod(sock, 0o666); err != nil {
+	// For root and the devcontainer's remoteUser only, who may not be root.
+	// Setup chowns it too, once it knows the remoteUser.
+	if err := os.Chmod(sock, 0o600); err != nil {
+		return err
+	}
+	if err := chownToCredsOwner(sock); err != nil {
 		return err
 	}
 	go func() {
@@ -265,6 +271,22 @@ func relayAgent(sock, sessions string) error {
 		}
 	}()
 	return nil
+}
+
+// chownToCredsOwner gives path to the uid:gid in credsOwner, if setup has
+// written it.
+func chownToCredsOwner(path string) error {
+	data, err := os.ReadFile(credsOwner)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	var uid, gid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d:%d", &uid, &gid); err != nil {
+		return fmt.Errorf("%s: %w", credsOwner, err)
+	}
+	return os.Chown(path, uid, gid)
 }
 
 // forwardedAgent connects to the newest live forwarded agent recorded in
@@ -301,8 +323,8 @@ type idleClock struct{ since time.Time }
 // observe records one poll and returns how long the Environment has been
 // Idle. The clock never starts before notBefore (zero if none): when setup
 // last exited, or when a Keep-alive expires (negative Idle until then).
-func (c *idleClock) observe(now time.Time, busy bool, notBefore time.Time) time.Duration {
-	if busy {
+func (c *idleClock) observe(now time.Time, active bool, notBefore time.Time) time.Duration {
+	if active {
 		c.since = now
 		return 0
 	}
@@ -312,9 +334,9 @@ func (c *idleClock) observe(now time.Time, busy bool, notBefore time.Time) time.
 	return now.Sub(c.since)
 }
 
-// busy reports whether an SSH connection or a running setup holds the
+// active reports whether an SSH connection or a running setup holds the
 // Environment awake.
-func busy() bool {
+func active() bool {
 	n, err := sshConnections("/proc/net/tcp", "/proc/net/tcp6")
 	if err != nil {
 		log.Printf("reading connections: %v", err)
@@ -444,7 +466,7 @@ func selfStop() error {
 			return err
 		}
 	}
-	for _, mnt := range []string{"/root", state} { // /root is bind-mounted from the volume
+	for _, mnt := range []string{"/root", volumeDir} { // /root is bind-mounted from the volume
 		if err := sh("! mountpoint -q " + mnt + " || umount " + mnt); err != nil {
 			log.Printf("unmounting %s: %v (continuing)", mnt, err)
 		}
@@ -456,8 +478,8 @@ func selfStop() error {
 // volume for the next `up` or `ssh` to print.
 func recoverFrom(failure error) {
 	for _, step := range []string{
-		"mountpoint -q " + state + " || mount " + state,
-		"mountpoint -q /root || mount --bind " + state + "/home /root",
+		"mountpoint -q " + volumeDir + " || mount " + volumeDir,
+		"mountpoint -q /root || mount --bind " + volumeDir + "/home /root",
 		// reset-failed: retries restart Docker often enough to hit
 		// systemd's start rate limit.
 		"systemctl reset-failed containerd docker.socket docker; systemctl start containerd docker.socket docker",
