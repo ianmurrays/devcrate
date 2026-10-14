@@ -146,8 +146,9 @@ user_script=/run/devcrate/user-setup.sh
 if [ -f "$user_script" ]; then
 	if [ "$in_container" = true ]; then
 		echo "running ~/.config/devcrate/setup.sh in the devcontainer…"
-		# Its login-shell env probe sources the forwarded env vars.
-		devcontainer exec --workspace-folder "$workspace" sh -s < "$user_script"
+		# "$@" is the --remote-env list from devcontainer up (in_container is
+		# true only when that ran).
+		devcontainer exec --workspace-folder "$workspace" "$@" sh -s < "$user_script"
 	else
 		echo "running ~/.config/devcrate/setup.sh…"
 		sh "$user_script" < /dev/null
