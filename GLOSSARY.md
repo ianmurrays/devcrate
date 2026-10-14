@@ -39,3 +39,7 @@ _Avoid_: Lock, pin
 **Self-stop**:
 A Stop initiated by the Agent from inside the Environment, using a credential pushed to the VM.
 _Avoid_: Auto-shutdown
+
+**Rebuild**:
+Recreating an Environment's devcontainer from its configuration, discarding the old container but keeping cached image layers.
+_Avoid_: Reset, recreate
