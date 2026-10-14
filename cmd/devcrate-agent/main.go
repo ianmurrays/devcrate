@@ -1,6 +1,7 @@
 // devcrate-agent runs on an Environment's VM as the root systemd unit
 // devcrate-agent.service. It watches for Idle and performs the Self-stop.
 // `devcrate-agent keep-alive <duration>` holds the Environment awake.
+// `devcrate-agent dial <host:port>` is one `devcrate forward` connection.
 //
 // `up` pushes this binary, the Provider's self-stop script and config.json to
 // /var/lib/devcrate/agent/ (the volume, so the Agent survives a Stop) and
@@ -104,7 +105,7 @@ func (d *duration) UnmarshalJSON(b []byte) error {
 func main() {
 	log.SetFlags(0) // journald adds timestamps
 	if len(os.Args) < 2 {
-		log.Fatal("usage: devcrate-agent install | run | keep-alive <duration>")
+		log.Fatal("usage: devcrate-agent install | run | keep-alive <duration> | dial <host:port>")
 	}
 	var err error
 	switch os.Args[1] {
@@ -114,6 +115,8 @@ func main() {
 		err = run()
 	case "keep-alive":
 		err = keepAliveCmd(os.Args[2:])
+	case "dial":
+		err = dialCmd(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
