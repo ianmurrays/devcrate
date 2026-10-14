@@ -212,11 +212,12 @@ func pipe(client *ssh.Client, conn net.Conn, target string) error {
 		io.Copy(stdin, conn)
 		stdin.Close() // half-close: the Agent closes its write side too
 	}()
+	// Only the Agent's own failures (e.g. nothing listening) are worth
+	// printing; a local client resetting the connection is routine.
 	if err := s.Wait(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return errors.New(msg)
 		}
-		return err
 	}
 	return nil
 }
