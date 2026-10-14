@@ -30,8 +30,23 @@ tee -a "$state/setup.log" < /run/devcrate/stdout &
 tee -a "$state/setup.log" < /run/devcrate/stderr >&2 &
 exec > /run/devcrate/stdout 2> /run/devcrate/stderr
 rm /run/devcrate/stdout /run/devcrate/stderr
-# Let the tees drain before the session ends; the exit status is kept.
-trap 'exec >&- 2>&-; wait' EXIT
+
+# The Agent never counts the Environment Idle while this lock is held, and
+# starts its idle clock when setup exits (the lock's mtime), however it exits.
+# Scripts setup runs get 9>&-, so what they leave running cannot hold it.
+exec 9>>/run/devcrate/setup.lock
+flock 9
+# Also let the tees drain before the session ends; the exit status is kept.
+trap 'touch /run/devcrate/setup.lock; exec >&- 2>&-; wait' EXIT
+
+# A sleeping laptop's session drops after about 3 minutes, so it stops
+# holding the Environment awake.
+sshd_conf=$(printf 'ClientAliveInterval 60\nClientAliveCountMax 3')
+if [ "$(cat /etc/ssh/sshd_config.d/devcrate.conf 2>/dev/null)" != "$sshd_conf" ]; then
+	mkdir -p /etc/ssh/sshd_config.d
+	echo "$sshd_conf" > /etc/ssh/sshd_config.d/devcrate.conf
+	systemctl reload ssh 2>/dev/null || systemctl reload sshd
+fi
 
 # at_least <version> <minimum>: dotted-version comparison.
 at_least() {
@@ -100,7 +115,7 @@ fi
 
 if [ -n "$setup_script" ]; then
 	echo "running $setup_script…"
-	(cd "$workspace" && if [ -x "./$setup_script" ]; then "./$setup_script"; else sh "./$setup_script"; fi) < /dev/null
+	(cd "$workspace" && if [ -x "./$setup_script" ]; then "./$setup_script"; else sh "./$setup_script"; fi) < /dev/null 9>&-
 fi
 
 if [ "$devcontainer" = false ]; then
@@ -120,7 +135,7 @@ else
 	fi
 	# Starts the existing container if there is one; lifecycle hooks such as
 	# postCreateCommand run only when it is created.
-	devcontainer up --workspace-folder "$workspace"
+	devcontainer up --workspace-folder "$workspace" 9>&-
 fi
 
 # The scripts get /dev/null as stdin: setup's own stdin is the rest of this
@@ -129,10 +144,10 @@ user_script=/run/devcrate/user-setup.sh
 if [ -f "$user_script" ]; then
 	if [ "$in_container" = true ]; then
 		echo "running ~/.config/devcrate/setup.sh in the devcontainer…"
-		devcontainer exec --workspace-folder "$workspace" sh -s < "$user_script"
+		devcontainer exec --workspace-folder "$workspace" sh -s < "$user_script" 9>&-
 	else
 		echo "running ~/.config/devcrate/setup.sh…"
-		sh "$user_script" < /dev/null
+		sh "$user_script" < /dev/null 9>&-
 	fi
 fi
 

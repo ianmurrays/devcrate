@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestRunSendsRequestOnStdinAndParsesStdout(t *testing.T) {
 	got := filepath.Join(dir, "stdin.json")
 	writeProvider(t, dir, "test", `echo "$1" > `+got+`.verb
 cat > `+got+`
-echo '{"state":"running","host":"10.0.0.1","user":"root","port":2222}'
+echo '{"state":"running","host":"10.0.0.1","user":"root","port":2222,"self_stop_env":{"TOKEN":"t0k"}}'
 `)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
@@ -39,7 +40,7 @@ echo '{"state":"running","host":"10.0.0.1","user":"root","port":2222}'
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res != (Result{State: "running", Host: "10.0.0.1", User: "root", Port: 2222}) {
+	if want := (Result{State: "running", Host: "10.0.0.1", User: "root", Port: 2222, SelfStopEnv: map[string]string{"TOKEN": "t0k"}}); !reflect.DeepEqual(res, want) {
 		t.Errorf("result = %+v", res)
 	}
 

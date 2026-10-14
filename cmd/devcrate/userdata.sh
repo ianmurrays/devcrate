@@ -34,3 +34,8 @@ if ! mountpoint -q /root; then
 fi
 
 systemctl restart ssh 2>/dev/null || systemctl restart sshd
+
+# The Agent `up` last pushed to the volume (none before the first `up`).
+if [ -x "$state/agent/devcrate-agent" ]; then
+	"$state/agent/devcrate-agent" install
+fi
