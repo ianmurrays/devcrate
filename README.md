@@ -130,10 +130,10 @@ A Rebuild builds on the cached image layers, so only the changed steps rerun. It
 ## Forwarding ports
 
 ```sh
-devcrate forward [name] [-p 8080] [-p 3001:3000]
+devcrate forward [--no-detect] [name] [-p 8080] [-p 3001:3000]
 ```
 
-Forwards `forwardPorts` from the devcontainer.json in the Environment's clone, plus each `-p <remote>` or `-p <local>:<remote>`, to `127.0.0.1` on the laptop until Ctrl-C. Ports are dialed from inside the devcontainer (on the VM when there is none), so servers bound to `127.0.0.1` there and `"host:port"` entries such as compose service names work. `portsAttributes.label` names each port in the output. A busy local port is skipped with a warning; remap it with `-p`. `forward` never starts an Environment, exits when its SSH connection drops, and keeps the Environment from being Idle while it runs.
+Forwards `forwardPorts` from the devcontainer.json in the Environment's clone, plus each `-p <remote>` or `-p <local>:<remote>`, to `127.0.0.1` on the laptop until Ctrl-C. Ports are dialed from inside the devcontainer (on the VM when there is none), so servers bound to `127.0.0.1` there and `"host:port"` entries such as compose service names work. `portsAttributes.label` names each port in the output. A busy local port is skipped with a warning; remap it with `-p`. It also detects listening ports, including ones that start while it runs, and forwards them to the same local port (when bound to `127.0.0.1`, `::1`, `0.0.0.0` or `::`, from 1024 up to the ephemeral range), prints `<port> closed` when a detected one stops, and picks them up again after `up --rebuild`. `portsAttributes` with `"onAutoForward": "ignore"` on a port or a `"from-to"` range hides it, `otherPortsAttributes: {"onAutoForward": "ignore"}` forwards only listed ports, and `--no-detect` turns detection off for one run. `forward` never starts an Environment, exits when its SSH connection drops, and keeps the Environment from being Idle while it runs.
 
 ## Keep-alive
 
