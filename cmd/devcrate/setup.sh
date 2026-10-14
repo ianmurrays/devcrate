@@ -189,15 +189,18 @@ else
 		echo "rebuilding the devcontainer…"
 		remove=--remove-existing-container
 	fi
-	# Lifecycle hooks get each forwarded var; the container gets the
-	# (read-only) creds directory. "$@" stays just the --remote-env list: the
-	# in-container user script below reuses it.
-	set --
+	# Lifecycle hooks get each forwarded var and SSH_AUTH_SOCK; the container
+	# gets the (read-only) creds directory and the Agent's SSH-agent relay
+	# directory (ssh --container sets SSH_AUTH_SOCK too). "$@" stays just the
+	# --remote-env list: the in-container user script below reuses it.
+	agent_dir=/run/devcrate/ssh-agent
+	mkdir -p "$agent_dir"
+	set -- --remote-env "SSH_AUTH_SOCK=$agent_dir/agent.sock"
 	while IFS= read -r name; do
 		eval "value=\$$name"
 		set -- "$@" --remote-env "$name=$value"
 	done < "$creds/names"
-	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" $remove "$@" < /dev/null 9>&-
+	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" --mount "type=bind,source=$agent_dir,target=$agent_dir" $remove "$@" < /dev/null 9>&-
 	# Only after success, so a failed Rebuild is retried by the next up.
 	echo "$hash" > "$state/devcontainer.hash"
 

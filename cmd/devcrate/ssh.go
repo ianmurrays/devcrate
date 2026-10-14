@@ -63,8 +63,15 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
+	agentSock, err := forwardAgent()
+	if err != nil {
+		return err
+	}
 	// -F /dev/null: everything comes from here, never the user's ssh config.
-	argv := []string{"ssh", "-F", "/dev/null", "-A"}
+	argv := []string{"ssh", "-F", "/dev/null"}
+	if agentSock != "" {
+		argv = append(argv, "-A")
+	}
 	if tty {
 		argv = append(argv, "-t") // ssh would not allocate one for a command
 	}
@@ -157,8 +164,13 @@ func (e *environment) containerCommand(client *ssh.Client, command []string, tty
 	if tty {
 		flags = "-it"
 	}
-	return []string{"docker", "exec", flags, id, "sh", "-c", shellQuote(script)}, nil
+	// The Agent's relay to this connection's forwarded agent, if any.
+	return []string{"docker", "exec", flags, "-e", "SSH_AUTH_SOCK=" + containerAgentSock, id, "sh", "-c", shellQuote(script)}, nil
 }
+
+// containerAgentSock is the Agent's SSH-agent relay, bind-mounted into the
+// devcontainer by setup.
+const containerAgentSock = "/run/devcrate/ssh-agent/agent.sock"
 
 // alias is the Environment's SSH host alias and HostKeyAlias.
 func (e *environment) alias() string { return "devcrate-" + e.Name }
@@ -187,8 +199,15 @@ func (e *environment) writeSSHConfig(res provider.Result) error {
 	if res.Port != 22 {
 		block += fmt.Sprintf("  Port %d\n", res.Port)
 	}
-	block += fmt.Sprintf("  User %s\n  HostKeyAlias %s\n  UserKnownHostsFile %s\n  IdentityFile %s\n  IdentitiesOnly yes\n  ForwardAgent yes\n",
+	block += fmt.Sprintf("  User %s\n  HostKeyAlias %s\n  UserKnownHostsFile %s\n  IdentityFile %s\n  IdentitiesOnly yes\n",
 		res.User, e.alias(), sshPath(filepath.Join(dir, "known_hosts")), sshPath(filepath.Join(dir, "id_ed25519")))
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.ForwardAgent == nil || *cfg.ForwardAgent {
+		block += "  ForwardAgent yes\n"
+	}
 	if err := e.editSSHConfig(block); err != nil {
 		return err
 	}

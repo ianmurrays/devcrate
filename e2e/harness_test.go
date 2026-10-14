@@ -294,6 +294,9 @@ func (e *Env) Command(args ...string) *exec.Cmd {
 		"DEVCRATE_FAKE_REGISTRY_MIRROR="+mirrorURL,
 		// The hidden test-only override of the Agent's 60 s poll.
 		"DEVCRATE_TEST_AGENT_POLL=1s",
+		// Never forward the developer's own agent to test VMs; tests that
+		// want one set it in LaptopEnv.
+		"SSH_AUTH_SOCK=",
 	)
 	cmd.Env = append(cmd.Env, e.LaptopEnv...)
 	cmd.Stdout, cmd.Stderr = &syncBuffer{}, &syncBuffer{}
