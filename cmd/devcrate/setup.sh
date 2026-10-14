@@ -1,11 +1,16 @@
 #!/bin/sh
 # devcrate setup: runs on the VM inside `up`'s SSH session as
-# `sh -s -- <origin> <devcontainer>`, where <devcontainer> is false for a
-# VM-only Environment. Any failure exits non-zero without the Ready marker,
-# which is written last.
+# `sh -s -- <origin> <devcontainer> <setup_script> <in_container>`, where
+# <devcontainer> is false for a VM-only Environment, <setup_script> is the
+# repo's script (a path in the repo, or empty), and <in_container> is true to
+# run the user's script in the devcontainer. devcrate pushes the user's script
+# to /run/devcrate/user-setup.sh first, if there is one. Any failure exits
+# non-zero without the Ready marker, which is written last.
 set -eu
 origin=$1
 devcontainer=$2
+setup_script=$3
+in_container=$4
 state=/var/lib/devcrate
 workspace=$state/workspace
 # The devcontainer CLI lives on the root disk, like Docker: a snapshot image
@@ -14,6 +19,19 @@ cli_prefix=/opt/devcontainers
 export PATH="$cli_prefix/bin:$PATH"
 
 rm -f /run/devcrate/ready
+
+# Everything below also goes to setup.log on the volume (stdout and stderr
+# stay separate on the way to devcrate). The log holds the latest setup only.
+mkdir -p /run/devcrate
+rm -f /run/devcrate/stdout /run/devcrate/stderr
+mkfifo /run/devcrate/stdout /run/devcrate/stderr
+: > "$state/setup.log"
+tee -a "$state/setup.log" < /run/devcrate/stdout &
+tee -a "$state/setup.log" < /run/devcrate/stderr >&2 &
+exec > /run/devcrate/stdout 2> /run/devcrate/stderr
+rm /run/devcrate/stdout /run/devcrate/stderr
+# Let the tees drain before the session ends; the exit status is kept.
+trap 'exec >&- 2>&-; wait' EXIT
 
 # at_least <version> <minimum>: dotted-version comparison.
 at_least() {
@@ -80,14 +98,22 @@ elif [ "$(git -C "$workspace" remote get-url origin)" != "$origin" ]; then
 	exit 1
 fi
 
-# Forwarded env vars, pushed to tmpfs by devcrate just before setup. A
-# Dockerfile's `--secret id=NAME` reads them from this environment.
+# Forwarded env vars, pushed to tmpfs by devcrate just before setup. Both
+# setup scripts see them, and a Dockerfile's `--secret id=NAME` reads them
+# from this environment.
 creds=/run/devcrate/creds
 . "$creds/env"
 
+if [ -n "$setup_script" ]; then
+	echo "running $setup_script…"
+	(cd "$workspace" && if [ -x "./$setup_script" ]; then "./$setup_script"; else sh "./$setup_script"; fi) < /dev/null
+fi
+
 if [ "$devcontainer" = false ]; then
+	in_container=false
 	echo "devcontainer = false: VM-only"
 elif [ ! -f "$workspace/.devcontainer/devcontainer.json" ] && [ ! -f "$workspace/.devcontainer.json" ]; then
+	in_container=false
 	echo "no devcontainer.json: VM-only"
 else
 	version=$(devcontainer --version 2>/dev/null || true)
@@ -99,20 +125,33 @@ else
 		run_installer https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh --prefix "$cli_prefix"
 	fi
 	# Starts the existing container if there is one; lifecycle hooks such as
-	# postCreateCommand run only when it is created.
-	# Lifecycle hooks get each forwarded var; the container gets the
-	# (read-only) creds directory.
+	# postCreateCommand run only when it is created. They get each forwarded
+	# var; the container gets the (read-only) creds directory.
 	set --
 	while IFS= read -r name; do
 		eval "value=\$$name"
 		set -- "$@" --remote-env "$name=$value"
 	done < "$creds/names"
-	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" "$@"
+	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" "$@" < /dev/null
 
 	# The same sourcing and $HOME symlinks as on the VM, for the container user.
 	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
 	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh"
-	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done"
+	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null
+fi
+
+# The scripts get /dev/null as stdin: setup's own stdin is the rest of this
+# script.
+user_script=/run/devcrate/user-setup.sh
+if [ -f "$user_script" ]; then
+	if [ "$in_container" = true ]; then
+		echo "running ~/.config/devcrate/setup.sh in the devcontainer…"
+		# Its login-shell env probe sources the forwarded env vars.
+		devcontainer exec --workspace-folder "$workspace" sh -s < "$user_script"
+	else
+		echo "running ~/.config/devcrate/setup.sh…"
+		sh "$user_script" < /dev/null
+	fi
 fi
 
 mkdir -p /run/devcrate

@@ -35,6 +35,29 @@ Environment names use only `a-z`, `0-9` and `-`, and are at most 32 characters. 
 
 devcrate connects to VMs with its own SSH keypair, created on first use at `~/.config/devcrate/id_ed25519`.
 
+## Setup scripts
+
+Two scripts you write can install tools on an Environment. Both run in `up`'s SSH session, as root, on every `up`, so they must be idempotent: check before installing, and don't append to a file twice.
+
+- **Repo script:** `setup_script = "path/in/repo.sh"` in `.devcrate.toml` (repo only). It runs on the VM in the clone at `/var/lib/devcrate/workspace`, after the clone and before `devcontainer up`. It is run directly if it is executable, else with `sh`. `up` never pulls, so it runs the script as it is in the VM's clone.
+- **User script:** `~/.config/devcrate/setup.sh`, pushed over SSH on every `up` and run with `sh` on the VM after the repo script and `devcontainer up`. With `setup_script_in_container = true` in `~/.config/devcrate/config.toml` (user config only; ignored in `.devcrate.toml`) it runs inside the devcontainer instead, as the container's `remoteUser`. In a VM-only Environment it always runs on the VM.
+
+A non-zero exit from either script fails setup: `up` exits 1 and the Environment is not Ready. Fix the script and run `up` again.
+
+Install your dotfiles from the user script, with `setup_script_in_container = true` if you work in the devcontainer:
+
+```sh
+# ~/.config/devcrate/setup.sh
+set -eu
+if [ ! -d ~/dotfiles ]; then
+	git clone https://github.com/you/dotfiles ~/dotfiles
+fi
+git -C ~/dotfiles pull -q
+~/dotfiles/install.sh
+```
+
+All setup output, including both scripts', is also written to `/var/lib/devcrate/setup.log` on the volume (the latest `up` only): `devcrate ssh <name> -- cat /var/lib/devcrate/setup.log`.
+
 ## Credentials
 
 List the env vars and files every Environment should get in your user config:
@@ -45,7 +68,7 @@ forward_env = ["GITHUB_TOKEN", "NPM_TOKEN"]
 forward_files = ["~/.npmrc", "~/.config/gh/hosts.yml"] # files under your home directory
 ```
 
-On every `up` and `devcrate ssh`, devcrate reads their current values on your laptop and writes them to the VM's tmpfs (`/run/devcrate/creds/env` and `/run/devcrate/creds/files/<path>`, mode 0600), never to the volume. So a rotated token takes effect on your next connection, and nothing is left after a Stop. Login shells on the VM and in the devcontainer source the env vars, `~/<path>` is a symlink to each file, and `/run/devcrate/creds` is mounted read-only into the devcontainer. Lifecycle hooks such as `postCreateCommand` see the env vars too. An env var that is unset on your laptop, or a file that is missing, is skipped with a warning.
+On every `up` and `devcrate ssh`, devcrate reads their current values on your laptop and writes them to the VM's tmpfs (`/run/devcrate/creds/env` and `/run/devcrate/creds/files/<path>`, mode 0600), never to the volume. So a rotated token takes effect on your next connection, and nothing is left after a Stop. Login shells on the VM and in the devcontainer source the env vars, `~/<path>` is a symlink to each file, and `/run/devcrate/creds` is mounted read-only into the devcontainer. Lifecycle hooks such as `postCreateCommand` and both setup scripts see the env vars too. An env var that is unset on your laptop, or a file that is missing, is skipped with a warning.
 
 These keys are rejected in `.devcrate.toml` (as is `forward_agent`): a repo cannot ask for your secrets.
 

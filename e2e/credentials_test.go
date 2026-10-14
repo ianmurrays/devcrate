@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,47 @@ func TestDockerfileReceivesBuildSecret(t *testing.T) {
 	}
 	if r := e.Devcrate("ssh", "--container", "--", "cut -c1-64 /build-secret"); r.Stdout != sha256hex(token)+"\n" {
 		t.Errorf("the build saw a secret hashing to %q exit %d, want %q", r.Stdout, r.Code, sha256hex(token))
+	}
+}
+
+// recordSeen appends hashes of the forwarded var and file, as the script
+// sees them, to /tmp/seen.
+const recordSeen = `printf %s "$DEVCRATE_E2E_TOKEN" | sha256sum | cut -c1-64 >> /tmp/seen
+sha256sum < "$HOME/.config/e2e/token" | cut -c1-64 >> /tmp/seen
+`
+
+func TestSetupScriptsSeeForwardedCredentials(t *testing.T) {
+	for _, inContainer := range []bool{false, true} {
+		name := "on the VM"
+		if inContainer {
+			name = "user script in the devcontainer"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			e := NewEnv(t)
+			e.WriteFile(".devcrate.toml", "provider = \"fake\"\nsetup_script = \"setup.sh\"\n")
+			e.WriteFile("setup.sh", recordSeen)
+			if inContainer {
+				e.withDevcontainer()
+			}
+			e.Push()
+			e.UserConfig(forwardConfig + fmt.Sprintf("setup_script_in_container = %t\n", inContainer))
+			e.UserSetupScript(recordSeen)
+			token := randomToken()
+			e.forward(token)
+			if r := e.Devcrate("up"); r.Code != 0 {
+				t.Fatalf("up exit %d", r.Code)
+			}
+			seen := sha256hex(token) + "\n" + sha256hex("file "+token) + "\n"
+			if out, _ := e.VM("cat /tmp/seen"); inContainer && out != seen || !inContainer && out != seen+seen {
+				t.Errorf("VM scripts saw %q, want the repo script's (and on the VM the user script's) %q", out, seen)
+			}
+			if inContainer {
+				if r := e.Devcrate("ssh", "--container", "--", "cat /tmp/seen"); r.Stdout != seen {
+					t.Errorf("container user script saw %q exit %d, want %q", r.Stdout, r.Code, seen)
+				}
+			}
+		})
 	}
 }
 
