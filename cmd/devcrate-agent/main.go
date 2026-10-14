@@ -1,5 +1,6 @@
 // devcrate-agent runs on an Environment's VM as the root systemd unit
 // devcrate-agent.service. It watches for Idle and performs the Self-stop.
+// `devcrate-agent keep-alive <duration>` holds the Environment awake.
 //
 // `up` pushes this binary, the Provider's self-stop script and config.json to
 // /var/lib/devcrate/agent/ (the volume, so the Agent survives a Stop) and
@@ -35,6 +36,11 @@ const (
 	// setupLock is held by setup.sh while it runs and touched when it exits.
 	setupLock  = "/run/devcrate/setup.lock"
 	agentError = state + "/agent-error"
+	// keepAlive holds the Keep-alive deadline (tmpfs: a reboot drops it).
+	keepAlive = "/run/devcrate/keep-alive"
+	// onPath links the installed binary so scripts on the VM can run
+	// `devcrate-agent keep-alive`.
+	onPath = "/usr/local/bin/devcrate-agent"
 )
 
 const unit = `[Unit]
@@ -78,7 +84,7 @@ func (d *duration) UnmarshalJSON(b []byte) error {
 func main() {
 	log.SetFlags(0) // journald adds timestamps
 	if len(os.Args) < 2 {
-		log.Fatal("usage: devcrate-agent install | run")
+		log.Fatal("usage: devcrate-agent install | run | keep-alive <duration>")
 	}
 	var err error
 	switch os.Args[1] {
@@ -86,6 +92,8 @@ func main() {
 		err = install()
 	case "run":
 		err = run()
+	case "keep-alive":
+		err = keepAliveCmd(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -105,6 +113,12 @@ func install() error {
 		}
 	}
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+		return err
+	}
+	if err := os.Remove(onPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Symlink(filepath.Join(installed, "devcrate-agent"), onPath); err != nil {
 		return err
 	}
 	return sh("systemctl daemon-reload && systemctl enable -q devcrate-agent && systemctl restart devcrate-agent")
@@ -154,7 +168,11 @@ func run() error {
 		case <-term:
 			return nil
 		case now := <-tick.C:
-			idle := clock.observe(now, busy(), setupExited())
+			notBefore := setupExited()
+			if until := keepAliveUntil(keepAlive); until.After(notBefore) {
+				notBefore = until
+			}
+			idle := clock.observe(now, busy(), notBefore)
 			if cfg.IdleTimeout.Duration == 0 || idle < cfg.IdleTimeout.Duration {
 				continue
 			}
@@ -177,15 +195,15 @@ func run() error {
 type idleClock struct{ since time.Time }
 
 // observe records one poll and returns how long the Environment has been
-// Idle. setupExit (zero if unknown) is when setup last exited: the clock never
-// starts before it.
-func (c *idleClock) observe(now time.Time, busy bool, setupExit time.Time) time.Duration {
+// Idle. The clock never starts before notBefore (zero if none): when setup
+// last exited, or when a Keep-alive expires (negative Idle until then).
+func (c *idleClock) observe(now time.Time, busy bool, notBefore time.Time) time.Duration {
 	if busy {
 		c.since = now
 		return 0
 	}
-	if setupExit.After(c.since) {
-		c.since = setupExit
+	if notBefore.After(c.since) {
+		c.since = notBefore
 	}
 	return now.Sub(c.since)
 }
@@ -256,6 +274,51 @@ func setupExited() time.Time {
 		return time.Time{}
 	}
 	return info.ModTime()
+}
+
+func keepAliveCmd(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: devcrate-agent keep-alive <duration>")
+	}
+	d, err := time.ParseDuration(args[0])
+	if err != nil {
+		return err
+	}
+	until, err := holdFor(keepAlive, time.Now(), d)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("kept alive until %s\n", until.Local().Format(time.DateTime+" MST"))
+	return nil
+}
+
+// holdFor writes a Keep-alive deadline of now+d to path, replacing any
+// earlier one.
+func holdFor(path string, now time.Time, d time.Duration) (time.Time, error) {
+	if d <= 0 {
+		return time.Time{}, fmt.Errorf("a Keep-alive needs a positive duration, not %s", d)
+	}
+	until := now.Add(d)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return time.Time{}, err
+	}
+	if err := os.WriteFile(path+".new", []byte(until.Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+		return time.Time{}, err
+	}
+	return until, os.Rename(path+".new", path)
+}
+
+// keepAliveUntil is the Keep-alive deadline in path, or zero.
+func keepAliveUntil(path string) time.Time {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}
+	}
+	until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+	if err != nil {
+		log.Printf("%s: %v", path, err)
+	}
+	return until
 }
 
 // selfStop quiesces the volume and runs the Provider's self-stop script. It

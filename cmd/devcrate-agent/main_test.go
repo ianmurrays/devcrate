@@ -35,3 +35,33 @@ func TestIdleClockStartsWhenSetupExits(t *testing.T) {
 		t.Errorf("idle a minute later = %s, want 65s", d)
 	}
 }
+
+func TestIdleClockStartsWhenKeepAliveExpires(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := idleClock{since: t0}
+	until := t0.Add(time.Minute) // a Keep-alive held until +60 s
+	if d := c.observe(t0.Add(30*time.Second), false, until); d > 0 {
+		t.Errorf("during the Keep-alive: idle %s, want none", d)
+	}
+	if d := c.observe(t0.Add(70*time.Second), false, until); d != 10*time.Second {
+		t.Errorf("idle 10 s after the Keep-alive expired = %s, want 10s", d)
+	}
+}
+
+func TestKeepAliveDeadlineRoundTrips(t *testing.T) {
+	path := t.TempDir() + "/run/keep-alive"
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := keepAliveUntil(path); !got.IsZero() {
+		t.Errorf("no Keep-alive: deadline %s, want zero", got)
+	}
+	until, err := holdFor(path, now, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(2 * time.Hour); !until.Equal(want) || !keepAliveUntil(path).Equal(want) {
+		t.Errorf("deadline = %s, read back %s, want %s", until, keepAliveUntil(path), want)
+	}
+	if _, err := holdFor(path, now, 0); err == nil {
+		t.Error("a zero Keep-alive was accepted")
+	}
+}
