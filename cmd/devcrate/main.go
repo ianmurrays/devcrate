@@ -33,7 +33,7 @@ var (
 	userData string
 )
 
-const usage = "usage: devcrate up [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
+const usage = "usage: devcrate up [--rebuild] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -54,7 +54,7 @@ func run(args []string) error {
 	allowed := []string{"--provider="}
 	switch args[0] {
 	case "up":
-		cmd = up
+		cmd, allowed = up, append(allowed, "--rebuild")
 	case "stop":
 		cmd = stop
 	case "delete":
@@ -175,6 +175,9 @@ func up(flags map[string]string, args []string) error {
 	if err := env.writeSSHConfig(res); err != nil {
 		return err
 	}
+	if err := pushCreds(client); err != nil {
+		return err
+	}
 
 	if err := env.installAgent(client, res); err != nil {
 		return fmt.Errorf("installing the Agent: %w", err)
@@ -190,7 +193,7 @@ func up(flags map[string]string, args []string) error {
 	}
 
 	fmt.Println("running setup…")
-	cmd := fmt.Sprintf("sh -s -- %s %t %s %t", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer)
+	cmd := fmt.Sprintf("sh -s -- %s %t %s %t %t", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer, flags["--rebuild"] != "")
 	if err := remote.Run(client, cmd, strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
@@ -505,6 +508,8 @@ type config struct {
 	dir          string                    // ~/.config/devcrate
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
+	ForwardEnv   []string                  `toml:"forward_env"`
+	ForwardFiles []string                  `toml:"forward_files"`
 	IdleTimeout  any                       `toml:"idle_timeout"` // see repo.ParseIdleTimeout
 	// SetupScriptInContainer runs ~/.config/devcrate/setup.sh in the
 	// devcontainer instead of on the VM.

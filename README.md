@@ -58,6 +58,49 @@ git -C ~/dotfiles pull -q
 
 All setup output, including both scripts', is also written to `/var/lib/devcrate/setup.log` on the volume (the latest `up` only): `devcrate ssh <name> -- cat /var/lib/devcrate/setup.log`.
 
+## Credentials
+
+List the env vars and files every Environment should get in your user config:
+
+```toml
+# ~/.config/devcrate/config.toml
+forward_env = ["GITHUB_TOKEN", "NPM_TOKEN"]
+forward_files = ["~/.npmrc", "~/.config/gh/hosts.yml"] # files under your home directory
+```
+
+On every `up` and `devcrate ssh`, devcrate reads their current values on your laptop and writes them to the VM's tmpfs (`/run/devcrate/creds/env` and `/run/devcrate/creds/files/<path>`, mode 0600), never to the volume. So a rotated token takes effect on your next connection, and nothing is left after a Stop. Login shells on the VM and in the devcontainer source the env vars, `~/<path>` is a symlink to each file, and `/run/devcrate/creds` is mounted read-only into the devcontainer. Lifecycle hooks such as `postCreateCommand` and both setup scripts see the env vars too. An env var that is unset on your laptop, or a file that is missing, is skipped with a warning.
+
+These keys are rejected in `.devcrate.toml` (as is `forward_agent`): a repo cannot ask for your secrets.
+
+### Build secrets
+
+A Dockerfile-based devcontainer can receive a `forward_env` value during its build by opting in:
+
+```jsonc
+// .devcontainer/devcontainer.json
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "options": ["--secret", "id=NPM_TOKEN"]
+  }
+}
+```
+
+```dockerfile
+RUN --mount=type=secret,id=NPM_TOKEN NPM_TOKEN=$(cat /run/secrets/NPM_TOKEN) npm ci
+```
+
+Limits:
+
+- Only Dockerfile builds receive secrets. Features and image-based configs can't.
+- `forward_files` are not exposed to builds.
+- Never pass a secret as a build arg (`build.args`) or a Feature option: those are baked into the image, which lives on the volume.
+- Secrets are not part of the Rebuild hash; run `devcrate up --rebuild` to rebuild with a rotated secret.
+
+### Trust model
+
+A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted-with-their-vm.md`). Its `devcontainer up` sees every forwarded env var and your forwarded SSH agent, and its `build.options` may name any env var or root-readable file on the VM as a secret. The boundary devcrate holds is on your laptop: which secrets leave it is set only in your user config. Don't `up` a repo you don't trust while forwarding secrets.
+
 ## Connecting
 
 `devcrate ssh [name]` opens a root shell on the VM, and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment.
@@ -69,6 +112,20 @@ Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config
 1. Install the Remote - SSH and Dev Containers extensions.
 2. Run **Remote-SSH: Connect to Host…** and pick `devcrate-<name>`.
 3. In that window, run **Dev Containers: Attach to Running Container…** and pick the Environment's devcontainer.
+
+## Rebuilding the devcontainer
+
+`up` keeps the existing devcontainer, so a resume is a `docker start` and `postCreateCommand` runs only once. It recreates the container (a Rebuild) when the devcontainer config on the VM changes. Edit it in the Environment's clone (`/var/lib/devcrate/workspace`): setup never pulls, so a change pushed from your laptop needs a `git pull` there first.
+
+devcrate hashes these inputs and stores the hash at `/var/lib/devcrate/devcontainer.hash`; when it changes, `up` passes `--remove-existing-container` to `devcontainer up`:
+
+- the `devcontainer.json` fields used to build the image or create the container: `image`, `build`, `dockerFile`, `context`, `features` (the Feature references and their options), `overrideFeatureInstallOrder`, `dockerComposeFile`, `service`, `runServices`, `workspaceMount`, `workspaceFolder`, `mounts`, `runArgs`, `appPort`, `containerEnv`, `containerUser`, `remoteUser`, `updateRemoteUserUID`, `init`, `privileged`, `capAdd` and `securityOpt`;
+- the Dockerfile;
+- the VM's CPU architecture.
+
+The hash does not cover other files in the build context (files a Dockerfile `COPY`s, a Compose file's contents), the digest the `FROM` tag points to, secret values, or any other `devcontainer.json` field: editing `forwardPorts`, `customizations`, `remoteEnv` or a lifecycle command such as `postCreateCommand` does not rebuild. For those, run `devcrate up --rebuild`, which recreates the container even with no config change.
+
+A Rebuild builds on the cached image layers, so only the changed steps rerun. It discards the old container: `postCreateCommand` runs again and the container's home starts fresh. The workspace is on the VM and survives.
 
 ## Forwarding ports
 

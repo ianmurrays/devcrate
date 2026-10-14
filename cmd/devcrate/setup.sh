@@ -1,9 +1,10 @@
 #!/bin/sh
 # devcrate setup: runs on the VM inside `up`'s SSH session as
-# `sh -s -- <origin> <devcontainer> <setup_script> <in_container>`, where
-# <devcontainer> is false for a VM-only Environment, <setup_script> is the
-# repo's script (a path in the repo, or empty), and <in_container> is true to
-# run the user's script in the devcontainer. devcrate pushes the user's script
+# `sh -s -- <origin> <devcontainer> <setup_script> <in_container> <rebuild>`,
+# where <devcontainer> is false for a VM-only Environment, <setup_script> is
+# the repo's script (a path in the repo, or empty), <in_container> is true to
+# run the user's script in the devcontainer and <rebuild> is true for
+# `up --rebuild`. devcrate pushes the user's script
 # to /run/devcrate/user-setup.sh first, if there is one. Any failure exits
 # non-zero without the Ready marker, which is written last.
 set -eu
@@ -11,12 +12,34 @@ origin=$1
 devcontainer=$2
 setup_script=$3
 in_container=$4
+rebuild=$5
 state=/var/lib/devcrate
 workspace=$state/workspace
 # The devcontainer CLI lives on the root disk, like Docker: a snapshot image
 # can carry both, and a fresh VM installs them.
 cli_prefix=/opt/devcontainers
 export PATH="$cli_prefix/bin:$PATH"
+
+# Prints the Rebuild hash of the devcontainer config in $config (the output of
+# `devcontainer read-configuration`): the fields that take effect when the
+# image is built or the container is created, the Dockerfile and the CPU
+# architecture. Build-context files, the FROM digest and secrets are not in it.
+hash_js='
+const path = require("path");
+const c = JSON.parse(process.env.config).configuration;
+const fields = ["image", "build", "dockerFile", "context", "features", "overrideFeatureInstallOrder",
+	"dockerComposeFile", "service", "runServices", "workspaceMount", "workspaceFolder", "mounts",
+	"runArgs", "appPort", "containerEnv", "containerUser", "remoteUser", "updateRemoteUserUID",
+	"init", "privileged", "capAdd", "securityOpt"];
+const sorted = v => Array.isArray(v) ? v.map(sorted)
+	: v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sorted(v[k])])) : v;
+const picked = Object.fromEntries(fields.filter(f => f in c).map(f => [f, sorted(c[f])]));
+const dockerfile = (c.build && c.build.dockerfile) || c.dockerFile;
+const text = dockerfile
+	? require("fs").readFileSync(path.resolve(path.dirname(c.configFilePath.fsPath), dockerfile), "utf8") : "";
+const hash = require("crypto").createHash("sha256");
+console.log(hash.update(JSON.stringify([picked, text, process.argv[1]])).digest("hex"));
+'
 
 rm -f /run/devcrate/ready
 
@@ -126,6 +149,12 @@ elif [ "$(git -C "$workspace" remote get-url origin)" != "$origin" ]; then
 	exit 1
 fi
 
+# Forwarded env vars, pushed to tmpfs by devcrate just before setup. Both
+# setup scripts see them, and a Dockerfile's `--secret id=NAME` reads them
+# from this environment.
+creds=/run/devcrate/creds
+. "$creds/env"
+
 if [ -n "$setup_script" ]; then
 	echo "running $setup_script…"
 	(cd "$workspace" && if [ -x "./$setup_script" ]; then "./$setup_script"; else sh "./$setup_script"; fi) < /dev/null 9>&-
@@ -147,8 +176,38 @@ else
 		run_installer https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh --prefix "$cli_prefix"
 	fi
 	# Starts the existing container if there is one; lifecycle hooks such as
-	# postCreateCommand run only when it is created.
-	devcontainer up --workspace-folder "$workspace" 9>&-
+	# postCreateCommand run only when it is created. The CLI never notices a
+	# config change, so a changed Rebuild hash recreates the container (ADR 0004).
+	config=$(devcontainer read-configuration --workspace-folder "$workspace" < /dev/null)
+	# The node the CLI runs on (installed above), else one on PATH.
+	node=$cli_prefix/node/current/bin/node
+	[ -x "$node" ] || node=node
+	hash=$(config=$config "$node" -e "$hash_js" "$(uname -m)" < /dev/null)
+	remove=
+	old=$(cat "$state/devcontainer.hash" 2>/dev/null || true)
+	if [ "$rebuild" = true ] || { [ -n "$old" ] && [ "$hash" != "$old" ]; }; then
+		echo "rebuilding the devcontainer…"
+		remove=--remove-existing-container
+	fi
+	# Lifecycle hooks get each forwarded var; the container gets the
+	# (read-only) creds directory. "$@" stays just the --remote-env list: the
+	# in-container user script below reuses it.
+	set --
+	while IFS= read -r name; do
+		eval "value=\$$name"
+		set -- "$@" --remote-env "$name=$value"
+	done < "$creds/names"
+	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" $remove "$@" < /dev/null 9>&-
+	# Only after success, so a failed Rebuild is retried by the next up.
+	echo "$hash" > "$state/devcontainer.hash"
+
+	# The same sourcing and $HOME symlinks as on the VM, for the container
+	# user, who owns the creds (devcrate's later pushes keep that owner).
+	devcontainer exec --workspace-folder "$workspace" sh -c 'echo "$(id -u):$(id -g)"' < /dev/null 9>&- > /run/devcrate/creds-owner
+	chown -R "$(cat /run/devcrate/creds-owner)" /run/devcrate/.creds
+	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
+	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh" 9>&-
+	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null 9>&-
 fi
 
 # The scripts get /dev/null as stdin: setup's own stdin is the rest of this
@@ -157,7 +216,9 @@ user_script=/run/devcrate/user-setup.sh
 if [ -f "$user_script" ]; then
 	if [ "$in_container" = true ]; then
 		echo "running ~/.config/devcrate/setup.sh in the devcontainer…"
-		devcontainer exec --workspace-folder "$workspace" sh -s < "$user_script" 9>&-
+		# "$@" is the --remote-env list from devcontainer up (in_container is
+		# true only when that ran).
+		devcontainer exec --workspace-folder "$workspace" "$@" sh -s < "$user_script" 9>&-
 	else
 		echo "running ~/.config/devcrate/setup.sh…"
 		sh "$user_script" < /dev/null 9>&-

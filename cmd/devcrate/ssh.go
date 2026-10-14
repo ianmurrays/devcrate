@@ -41,7 +41,11 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to %s: %w", env.Name, err)
 	}
-	err = printAgentError(client, false)
+	// Every connection carries the laptop's current values.
+	err = pushCreds(client)
+	if err == nil {
+		err = printAgentError(client, false)
+	}
 	tty := len(command) == 0 && term.IsTerminal(int(os.Stdin.Fd()))
 	if err == nil && flags["--container"] != "" {
 		command, err = env.containerCommand(client, command, tty)
@@ -131,7 +135,14 @@ func (e *environment) containerCommand(client *ssh.Client, command []string, tty
 	if err := remote.Run(client, find, nil, &out, os.Stderr); err != nil {
 		return nil, fmt.Errorf("looking for %s's devcontainer: %w", e.Name, err)
 	}
-	id, state, _ := strings.Cut(strings.TrimSpace(out.String()), " ")
+	// More than one can match (say, after an interrupted Rebuild): prefer
+	// the running one.
+	var id, state string
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if id == "" || state != "running" {
+			id, state, _ = strings.Cut(line, " ")
+		}
+	}
 	switch {
 	case id == "":
 		return nil, fmt.Errorf("%s has no devcontainer; use devcrate ssh without --container for the VM", e.Name)

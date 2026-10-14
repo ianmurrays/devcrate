@@ -10,7 +10,7 @@ RUN apt-get update \
  && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-compose-plugin \
+ && apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL -o /tmp/devcontainers-install.sh https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh \
  && sh /tmp/devcontainers-install.sh --prefix /opt/devcontainers \
