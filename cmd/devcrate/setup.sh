@@ -1,17 +1,42 @@
 #!/bin/sh
 # devcrate setup: runs on the VM inside `up`'s SSH session as
-# `sh -s -- <origin> <devcontainer>`, where <devcontainer> is false for a
-# VM-only Environment. Any failure exits non-zero without the Ready marker,
+# `sh -s -- <origin> <devcontainer> <rebuild>`, where <devcontainer> is false
+# for a VM-only Environment and <rebuild> is true for `up --rebuild`. Any failure exits non-zero without the Ready marker,
 # which is written last.
 set -eu
 origin=$1
 devcontainer=$2
+rebuild=$3
 state=/var/lib/devcrate
 workspace=$state/workspace
 # The devcontainer CLI lives on the root disk, like Docker: a snapshot image
 # can carry both, and a fresh VM installs them.
 cli_prefix=/opt/devcontainers
 export PATH="$cli_prefix/bin:$PATH"
+# The node the devcontainer CLI runs on, falling back to one on PATH.
+node=$cli_prefix/node/current/bin/node
+[ -x "$node" ] || node=node
+
+# Prints the Rebuild hash of the devcontainer config in $config (the output of
+# `devcontainer read-configuration`): the fields that take effect when the
+# image is built or the container is created, the Dockerfile and the CPU
+# architecture. Build-context files, the FROM digest and secrets are not in it.
+hash_js='
+const path = require("path");
+const c = JSON.parse(process.env.config).configuration;
+const fields = ["image", "build", "dockerFile", "context", "features", "overrideFeatureInstallOrder",
+	"dockerComposeFile", "service", "runServices", "workspaceMount", "workspaceFolder", "mounts",
+	"runArgs", "appPort", "containerEnv", "containerUser", "remoteUser", "updateRemoteUserUID",
+	"init", "privileged", "capAdd", "securityOpt"];
+const sorted = v => Array.isArray(v) ? v.map(sorted)
+	: v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sorted(v[k])])) : v;
+const picked = Object.fromEntries(fields.filter(f => f in c).map(f => [f, sorted(c[f])]));
+const dockerfile = (c.build && c.build.dockerfile) || c.dockerFile;
+const text = dockerfile
+	? require("fs").readFileSync(path.resolve(path.dirname(c.configFilePath.fsPath), dockerfile), "utf8") : "";
+const hash = require("crypto").createHash("sha256");
+console.log(hash.update(JSON.stringify([picked, text, process.argv[1]])).digest("hex"));
+'
 
 rm -f /run/devcrate/ready
 
@@ -94,8 +119,19 @@ else
 		run_installer https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh --prefix "$cli_prefix"
 	fi
 	# Starts the existing container if there is one; lifecycle hooks such as
-	# postCreateCommand run only when it is created.
-	devcontainer up --workspace-folder "$workspace"
+	# postCreateCommand run only when it is created. The CLI never notices a
+	# config change, so a changed Rebuild hash recreates the container (ADR 0004).
+	config=$(devcontainer read-configuration --workspace-folder "$workspace")
+	hash=$(config=$config "$node" -e "$hash_js" "$(uname -m)")
+	set -- --workspace-folder "$workspace"
+	old=$(cat "$state/devcontainer.hash" 2>/dev/null || true)
+	if [ "$rebuild" = true ] || { [ -n "$old" ] && [ "$hash" != "$old" ]; }; then
+		echo "rebuilding the devcontainer…"
+		set -- "$@" --remove-existing-container
+	fi
+	devcontainer up "$@"
+	# Only after success, so a failed Rebuild is retried by the next up.
+	echo "$hash" > "$state/devcontainer.hash"
 fi
 
 mkdir -p /run/devcrate

@@ -32,7 +32,7 @@ var (
 	userData string
 )
 
-const usage = "usage: devcrate up [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>]  (each takes --provider <name>)"
+const usage = "usage: devcrate up [--rebuild] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>]  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -53,7 +53,7 @@ func run(args []string) error {
 	allowed := []string{"--provider="}
 	switch args[0] {
 	case "up":
-		cmd = up
+		cmd, allowed = up, append(allowed, "--rebuild")
 	case "stop":
 		cmd = stop
 	case "delete":
@@ -166,7 +166,7 @@ func up(flags map[string]string, args []string) error {
 	}
 
 	fmt.Println("running setup…")
-	cmd := fmt.Sprintf("sh -s -- %s %t", shellQuote(env.origin), env.devcontainer)
+	cmd := fmt.Sprintf("sh -s -- %s %t %t", shellQuote(env.origin), env.devcontainer, flags["--rebuild"] != "")
 	if err := remote.Run(client, cmd, strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
