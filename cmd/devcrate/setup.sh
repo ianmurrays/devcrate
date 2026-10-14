@@ -19,9 +19,6 @@ workspace=$state/workspace
 # can carry both, and a fresh VM installs them.
 cli_prefix=/opt/devcontainers
 export PATH="$cli_prefix/bin:$PATH"
-# The node the devcontainer CLI runs on, falling back to one on PATH.
-node=$cli_prefix/node/current/bin/node
-[ -x "$node" ] || node=node
 
 # Prints the Rebuild hash of the devcontainer config in $config (the output of
 # `devcontainer read-configuration`): the fields that take effect when the
@@ -162,15 +159,18 @@ else
 	# Starts the existing container if there is one; lifecycle hooks such as
 	# postCreateCommand run only when it is created. The CLI never notices a
 	# config change, so a changed Rebuild hash recreates the container (ADR 0004).
-	config=$(devcontainer read-configuration --workspace-folder "$workspace")
-	hash=$(config=$config "$node" -e "$hash_js" "$(uname -m)")
+	config=$(devcontainer read-configuration --workspace-folder "$workspace" < /dev/null)
+	# The node the CLI runs on (installed above), else one on PATH.
+	node=$cli_prefix/node/current/bin/node
+	[ -x "$node" ] || node=node
+	hash=$(config=$config "$node" -e "$hash_js" "$(uname -m)" < /dev/null)
 	set -- --workspace-folder "$workspace"
 	old=$(cat "$state/devcontainer.hash" 2>/dev/null || true)
 	if [ "$rebuild" = true ] || { [ -n "$old" ] && [ "$hash" != "$old" ]; }; then
 		echo "rebuilding the devcontainer…"
 		set -- "$@" --remove-existing-container
 	fi
-	devcontainer up "$@" 9>&-
+	devcontainer up "$@" < /dev/null 9>&-
 	# Only after success, so a failed Rebuild is retried by the next up.
 	echo "$hash" > "$state/devcontainer.hash"
 fi
