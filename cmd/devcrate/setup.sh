@@ -15,6 +15,22 @@ export PATH="$cli_prefix/bin:$PATH"
 
 rm -f /run/devcrate/ready
 
+# The Agent never counts the Environment Idle while this lock is held, and
+# starts its idle clock when setup exits (the lock's mtime), however it exits.
+mkdir -p /run/devcrate
+exec 9>>/run/devcrate/setup.lock
+flock 9
+trap 'touch /run/devcrate/setup.lock' EXIT
+
+# A sleeping laptop's session drops after about 3 minutes, so it stops
+# holding the Environment awake.
+sshd_conf=$(printf 'ClientAliveInterval 60\nClientAliveCountMax 3')
+if [ "$(cat /etc/ssh/sshd_config.d/devcrate.conf 2>/dev/null)" != "$sshd_conf" ]; then
+	mkdir -p /etc/ssh/sshd_config.d
+	echo "$sshd_conf" > /etc/ssh/sshd_config.d/devcrate.conf
+	systemctl reload ssh 2>/dev/null || systemctl reload sshd
+fi
+
 # at_least <version> <minimum>: dotted-version comparison.
 at_least() {
 	[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]

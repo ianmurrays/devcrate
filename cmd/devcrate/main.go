@@ -153,6 +153,9 @@ func up(flags map[string]string, args []string) error {
 	if res.State != "running" {
 		return fmt.Errorf("provider %s up returned state %q, want running", env.provider.Name, res.State)
 	}
+	if env.idleTimeout != 0 && len(res.SelfStopEnv) == 0 {
+		return fmt.Errorf("provider %s returned no self_stop_env, so %s could not stop itself when Idle: configure the Provider's Self-stop credential (see its README), or set idle_timeout = 0 to turn idle stop off", env.provider.Name, env.Name)
+	}
 
 	fmt.Println("waiting for SSH…")
 	client, err := env.dial(res, 3*time.Minute)
@@ -163,6 +166,10 @@ func up(flags map[string]string, args []string) error {
 	// Before setup, so a failed setup can still be inspected over ssh.
 	if err := env.writeSSHConfig(res); err != nil {
 		return err
+	}
+
+	if err := env.installAgent(client, res); err != nil {
+		return fmt.Errorf("installing the Agent: %w", err)
 	}
 
 	fmt.Println("running setup…")
@@ -318,6 +325,8 @@ type environment struct {
 	searched []string // Providers asked when resolving a bare name
 	// devcontainer is false when the Environment is VM-only by choice.
 	devcontainer bool
+	// idleTimeout of continuous Idle makes the Agent Self-stop; 0 never.
+	idleTimeout time.Duration
 }
 
 // fromRepo is the Environment of the repo at the git URL, if given, else of
@@ -355,7 +364,16 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 			devcontainer = *v
 		}
 	}
-	return &environment{Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer}, nil
+	idleTimeout := repo.DefaultIdleTimeout
+	if cfg.IdleTimeout != nil {
+		if idleTimeout, err = repo.ParseIdleTimeout(cfg.IdleTimeout); err != nil {
+			return nil, fmt.Errorf("%s: %w", filepath.Join(cfg.dir, "config.toml"), err)
+		}
+	}
+	if ctx.IdleTimeout != nil { // repo wins
+		idleTimeout = *ctx.IdleTimeout
+	}
+	return &environment{Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer, idleTimeout: idleTimeout}, nil
 }
 
 // resolve finds the Environment for `[name]`. Without a name, it is the
@@ -452,6 +470,7 @@ type config struct {
 	dir          string                    // ~/.config/devcrate
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
+	IdleTimeout  any                       `toml:"idle_timeout"` // see repo.ParseIdleTimeout
 }
 
 func loadConfig() (*config, error) {

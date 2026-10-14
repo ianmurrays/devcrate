@@ -47,6 +47,16 @@ func run(m *testing.M) int {
 
 	must(sh("", "go", "build", "-o", filepath.Join(binDir, "devcrate"), "../cmd/devcrate"))
 	must(sh("", "go", "build", "-o", filepath.Join(binDir, "devcrate-provider-fake"), "./fakeprovider"))
+	// The Agent runs on the fake VM, so it is built for the Docker daemon's
+	// CPU, not this machine's. devcrate finds it next to itself.
+	arch, err := exec.Command("docker", "version", "-f", "{{.Server.Arch}}").Output()
+	must(err)
+	goarch := strings.TrimSpace(string(arch))
+	agent := exec.Command("go", "build", "-o", filepath.Join(binDir, "devcrate-agent-linux-"+goarch), "../cmd/devcrate-agent")
+	agent.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+goarch)
+	if out, err := agent.CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("building the Agent: %v\n%s", err, out))
+	}
 
 	// Tag the VM image by the Dockerfile's hash so worktrees with different
 	// Dockerfiles don't clobber each other's image.
@@ -240,6 +250,8 @@ func (e *Env) Command(args ...string) *exec.Cmd {
 		"HOME="+e.Home,
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"DEVCRATE_FAKE_IMAGE="+vmImage,
+		// The hidden test-only override of the Agent's 60 s poll.
+		"DEVCRATE_TEST_AGENT_POLL=1s",
 	)
 	cmd.Stdout, cmd.Stderr = &syncBuffer{}, &syncBuffer{}
 	return cmd
@@ -295,6 +307,23 @@ func (e *Env) VM(script string) (out string, code int) {
 		e.t.Fatalf("docker exec: %v", err)
 	}
 	return string(b), 0
+}
+
+// LoadImage copies an image from the host's Docker (pulling it there if
+// missing) into the running VM's Docker, so a devcontainer test does not
+// depend on Docker Hub's pull rate limit. Call it after an `up`, which moves
+// the VM's Docker storage onto the volume.
+func (e *Env) LoadImage(ref string) {
+	e.t.Helper()
+	if exec.Command("docker", "image", "inspect", ref).Run() != nil {
+		if out, err := exec.Command("docker", "pull", "-q", ref).CombinedOutput(); err != nil {
+			e.t.Fatalf("docker pull %s: %v\n%s", ref, err, out)
+		}
+	}
+	cmd := exec.Command("sh", "-c", `docker save "$1" | docker exec -i "$2" docker load -q`, "sh", ref, e.Container())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		e.t.Fatalf("loading %s into the VM: %v\n%s", ref, err, out)
+	}
 }
 
 // ContainerID is the fake VM's container ID, or "" when there is none.

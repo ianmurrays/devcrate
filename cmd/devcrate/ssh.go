@@ -53,8 +53,9 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to %s: %w", env.Name, err)
 	}
+	err = printAgentError(client, false)
 	tty := len(command) == 0 && term.IsTerminal(int(os.Stdin.Fd()))
-	if flags["--container"] != "" {
+	if err == nil && flags["--container"] != "" {
 		command, err = env.containerCommand(client, command, tty)
 	}
 	client.Close()

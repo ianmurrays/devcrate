@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -23,6 +24,28 @@ type Context struct {
 	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
 	// Devcontainer is `devcontainer` from .devcrate.toml, nil when unset.
 	Devcontainer *bool
+	// IdleTimeout is `idle_timeout` from .devcrate.toml, nil when unset.
+	IdleTimeout *time.Duration
+}
+
+// DefaultIdleTimeout applies when neither the repo nor the user sets one.
+const DefaultIdleTimeout = 30 * time.Minute
+
+// ParseIdleTimeout reads an idle_timeout value: a duration string such as
+// "30m", or 0 to turn idle stop off.
+func ParseIdleTimeout(v any) (time.Duration, error) {
+	bad := fmt.Errorf(`idle_timeout must be a duration such as "30m", or 0 to turn idle stop off; got %v`, v)
+	switch v := v.(type) {
+	case int64:
+		if v == 0 {
+			return 0, nil
+		}
+	case string:
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d, nil
+		}
+	}
+	return 0, bad
 }
 
 // ErrNotRepo is Load's error when dir is not inside a git repo.
@@ -87,6 +110,14 @@ func parse(origin, devcrateToml string) (*Context, error) {
 		}
 		c.Devcontainer = &b
 		delete(c.Options, "devcontainer")
+	}
+	if v, ok := c.Options["idle_timeout"]; ok {
+		d, err := ParseIdleTimeout(v)
+		if err != nil {
+			return nil, fmt.Errorf(".devcrate.toml: %w", err)
+		}
+		c.IdleTimeout = &d
+		delete(c.Options, "idle_timeout")
 	}
 	if name, ok := c.Options["name"]; ok {
 		c.Name = fmt.Sprint(name)
