@@ -64,6 +64,12 @@ All setup output, including both scripts', is also written to `/var/lib/devcrate
 
 Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config` (the VM's address changes on every resume), and the first `up` adds `Include ~/.ssh/devcrate_config` to the top of `~/.ssh/config`. So plain `ssh devcrate-<name>` works too, with agent forwarding on. The VM's host key is kept on its volume and pinned in `~/.config/devcrate/known_hosts`, so a resume never causes a host key warning. `delete` removes the block; `stop` leaves it.
 
+### SSH-agent forwarding
+
+`git` over SSH works on the VM and in the devcontainer with your own keys, which never leave your laptop: devcrate forwards your SSH agent on `up` (so setup scripts, `devcontainer up` and its lifecycle hooks have it), on `devcrate ssh` and in the SSH config block. Inside the devcontainer, `SSH_AUTH_SOCK=/run/devcrate/ssh-agent/agent.sock` reaches the agent of whoever connected last and is still connected, so it keeps working across reconnects; with nobody connected it refuses connections. To give an image build your agent, opt in with `"build": {"options": ["--ssh", "default"]}` in `devcontainer.json` and `RUN --mount=type=ssh ...` in the Dockerfile.
+
+The accepted risk: while you are connected, root on the VM (and so the repo you `up`, see ADR 0005) can use your keys, though it cannot copy them. Add keys with `ssh-add -c` to confirm every use, or load a dedicated key for git hosting only. Set `forward_agent = false` in `~/.config/devcrate/config.toml` (user config only; `.devcrate.toml` may not set it) to turn forwarding off everywhere.
+
 ### VS Code
 
 1. Install the Remote - SSH and Dev Containers extensions.

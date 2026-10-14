@@ -1,9 +1,16 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestCountEstablishedCountsOnlyConnectionsToSSH(t *testing.T) {
@@ -63,5 +70,75 @@ func TestKeepAliveDeadlineRoundTrips(t *testing.T) {
 	}
 	if _, err := holdFor(path, now, 0); err == nil {
 		t.Error("a zero Keep-alive was accepted")
+	}
+}
+
+// agentAt listens on a unix socket in dir that answers each connection with
+// its name, and records it in sessions as sshd's ~/.ssh/rc would.
+func agentAt(t *testing.T, dir, sessions, name string, mtime time.Time) net.Listener {
+	t.Helper()
+	sock := filepath.Join(dir, name+".sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			io.WriteString(c, name)
+			c.Close()
+		}
+	}()
+	record(t, sessions, name, sock, mtime)
+	return ln
+}
+
+func record(t *testing.T, sessions, name, target string, mtime time.Time) {
+	t.Helper()
+	link := filepath.Join(sessions, name)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	tv := []unix.Timeval{unix.NsecToTimeval(mtime.UnixNano()), unix.NsecToTimeval(mtime.UnixNano())}
+	if err := unix.Lutimes(link, tv); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestForwardedAgentIsNewestLiveSession(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "agent") // unix socket paths are short
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sessions := filepath.Join(dir, "sessions")
+	os.Mkdir(sessions, 0o755)
+	t0 := time.Now().Add(-time.Hour)
+
+	if c, err := forwardedAgent(sessions); err == nil {
+		c.Close()
+		t.Fatal("nobody connected: got an agent, want none")
+	}
+
+	agentAt(t, dir, sessions, "old", t0)
+	agentAt(t, dir, sessions, "new", t0.Add(time.Minute))
+	// The newest session has disconnected: sshd removed its socket.
+	record(t, sessions, "gone", filepath.Join(dir, "gone.sock"), t0.Add(2*time.Minute))
+
+	c, err := forwardedAgent(sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(c)
+	c.Close()
+	if string(got) != "new" {
+		t.Errorf("relayed to %q, want the newest live session, new", got)
+	}
+	if _, err := os.Lstat(filepath.Join(sessions, "gone")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the dead session's record was kept: %v", err)
 	}
 }

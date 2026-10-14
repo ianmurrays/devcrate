@@ -186,7 +186,13 @@ func up(flags map[string]string, args []string) error {
 
 	fmt.Println("running setup…")
 	cmd := fmt.Sprintf("sh -s -- %s %t %s %t", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer)
-	if err := remote.Run(client, cmd, strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
+	// Setup gets the laptop's agent, for the setup scripts, git and builds
+	// (and, through the Agent's relay, the devcontainer's lifecycle hooks).
+	agentSock, err := forwardAgent()
+	if err != nil {
+		return err
+	}
+	if err := remote.RunWithAgent(client, agentSock, cmd, strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
 
@@ -504,6 +510,22 @@ type config struct {
 	// SetupScriptInContainer runs ~/.config/devcrate/setup.sh in the
 	// devcontainer instead of on the VM.
 	SetupScriptInContainer bool `toml:"setup_script_in_container"`
+	// ForwardAgent (default true) forwards the laptop's SSH agent on every
+	// devcrate SSH connection and in the SSH config entry.
+	ForwardAgent *bool `toml:"forward_agent"`
+}
+
+// forwardAgent is the laptop's SSH agent socket when the user config lets
+// devcrate forward it, else "".
+func forwardAgent() (string, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return "", err
+	}
+	if cfg.ForwardAgent != nil && !*cfg.ForwardAgent {
+		return "", nil
+	}
+	return os.Getenv("SSH_AUTH_SOCK"), nil
 }
 
 func loadConfig() (*config, error) {

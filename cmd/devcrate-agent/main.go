@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -41,7 +43,25 @@ const (
 	// onPath links the installed binary so scripts on the VM can run
 	// `devcrate-agent keep-alive`.
 	onPath = "/usr/local/bin/devcrate-agent"
+	// agentSock is the stable SSH-agent socket the devcontainer gets (its
+	// directory is bind-mounted in). It relays to the newest live forwarded
+	// agent among those sshd's ~/.ssh/rc records in agentSessions.
+	agentSock     = "/run/devcrate/ssh-agent/agent.sock"
+	agentSessions = "/run/devcrate/ssh-agent-sessions"
+	// sshRC is root's ~/.ssh/rc (on the volume). sshd runs it at the start
+	// of every session, before the command.
+	sshRC = "/root/.ssh/rc"
 )
+
+// rc records the session's forwarded agent, if any, as a symlink. It must
+// print nothing: its output would reach the session.
+const rc = `#!/bin/sh
+# Written by devcrate-agent install: records this session's forwarded SSH
+# agent for the relay at ` + agentSock + `.
+if [ -n "${SSH_AUTH_SOCK:-}" ]; then
+	mkdir -p ` + agentSessions + ` && ln -sfn "$SSH_AUTH_SOCK" "` + agentSessions + `/$(echo "$SSH_AUTH_SOCK" | tr / _)"
+fi
+`
 
 const unit = `[Unit]
 Description=devcrate Agent: Idle detection and Self-stop
@@ -112,6 +132,12 @@ func install() error {
 			return err
 		}
 	}
+	if err := os.MkdirAll(filepath.Dir(sshRC), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(sshRC, []byte(rc), 0o644); err != nil {
+		return err
+	}
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return err
 	}
@@ -157,6 +183,9 @@ func run() error {
 		}
 	}
 	log.Printf("idle_timeout %s, poll %s", cfg.IdleTimeout, cfg.Poll)
+	if err := relayAgent(agentSock, agentSessions); err != nil {
+		log.Printf("SSH-agent relay: %v", err) // idle stop still works
+	}
 	term := make(chan os.Signal, 1)
 	signal.Notify(term, syscall.SIGTERM, syscall.SIGINT)
 
@@ -189,6 +218,75 @@ func run() error {
 			return nil
 		}
 	}
+}
+
+// relayAgent listens on sock and relays each connection to the forwarded
+// agent of the newest live SSH session recorded in sessions. With none, it
+// closes the connection at once: nobody's keys are usable while nobody is
+// connected.
+func relayAgent(sock, sessions string) error {
+	if err := os.MkdirAll(filepath.Dir(sock), 0o755); err != nil {
+		return err
+	}
+	os.Remove(sock) // left by the previous run
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		return err
+	}
+	// The container user may not be root.
+	if err := os.Chmod(sock, 0o666); err != nil {
+		return err
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				log.Printf("SSH-agent relay: %v", err)
+				return
+			}
+			go func() {
+				defer c.Close()
+				a, err := forwardedAgent(sessions)
+				if err != nil {
+					return
+				}
+				// Either side closing ends both: an open channel to the
+				// forwarded agent would keep the user's ssh session open.
+				defer a.Close()
+				go func() { io.Copy(a, c); a.Close(); c.Close() }()
+				io.Copy(c, a)
+			}()
+		}
+	}()
+	return nil
+}
+
+// forwardedAgent connects to the newest live forwarded agent recorded in
+// sessions, dropping the records of sessions that have ended.
+func forwardedAgent(sessions string) (net.Conn, error) {
+	entries, err := os.ReadDir(sessions)
+	if err != nil {
+		return nil, err
+	}
+	type rec struct {
+		path string
+		at   time.Time
+	}
+	var recs []rec
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil {
+			recs = append(recs, rec{filepath.Join(sessions, e.Name()), info.ModTime()})
+		}
+	}
+	sort.Slice(recs, func(i, j int) bool { return recs[i].at.After(recs[j].at) })
+	for _, r := range recs {
+		c, err := net.Dial("unix", r.path)
+		if err == nil {
+			return c, nil
+		}
+		os.Remove(r.path) // sshd removes a session's socket when it ends
+	}
+	return nil, errors.New("no SSH session with a forwarded agent")
 }
 
 // idleClock measures continuous Idle.

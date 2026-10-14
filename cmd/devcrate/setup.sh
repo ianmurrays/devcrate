@@ -147,7 +147,12 @@ else
 	fi
 	# Starts the existing container if there is one; lifecycle hooks such as
 	# postCreateCommand run only when it is created.
-	devcontainer up --workspace-folder "$workspace" 9>&-
+	# The Agent's SSH-agent relay: the container gets its directory and
+	# lifecycle hooks get SSH_AUTH_SOCK (ssh --container sets it too).
+	agent_dir=/run/devcrate/ssh-agent
+	mkdir -p "$agent_dir"
+	set -- --remote-env "SSH_AUTH_SOCK=$agent_dir/agent.sock"
+	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$agent_dir,target=$agent_dir" "$@" 9>&-
 fi
 
 # The scripts get /dev/null as stdin: setup's own stdin is the rest of this
@@ -156,7 +161,9 @@ user_script=/run/devcrate/user-setup.sh
 if [ -f "$user_script" ]; then
 	if [ "$in_container" = true ]; then
 		echo "running ~/.config/devcrate/setup.sh in the devcontainer…"
-		devcontainer exec --workspace-folder "$workspace" sh -s < "$user_script" 9>&-
+		# "$@" is the --remote-env list from devcontainer up (in_container is
+		# true only when that ran).
+		devcontainer exec --workspace-folder "$workspace" "$@" sh -s < "$user_script" 9>&-
 	else
 		echo "running ~/.config/devcrate/setup.sh…"
 		sh "$user_script" < /dev/null 9>&-

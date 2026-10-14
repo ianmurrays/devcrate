@@ -101,6 +101,12 @@ func parse(origin, devcrateToml string) (*Context, error) {
 	if _, err := toml.Decode(devcrateToml, &c.Options); err != nil {
 		return nil, fmt.Errorf(".devcrate.toml: %w", err)
 	}
+	// Which secrets leave the laptop is the user's call, never the repo's (ADR 0005).
+	for _, key := range []string{"forward_env", "forward_files", "forward_agent"} {
+		if _, ok := c.Options[key]; ok {
+			return nil, fmt.Errorf(".devcrate.toml: %s can only be set in your user config (~/.config/devcrate/config.toml), so a repo cannot ask for your secrets", key)
+		}
+	}
 	c.Provider, _ = c.Options["provider"].(string)
 	delete(c.Options, "provider")
 	if c.Provider == "" {
