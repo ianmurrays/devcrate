@@ -78,7 +78,7 @@ func main() {
 		if req.Options["no_self_stop_env"] == true {
 			fail("no Self-stop credential configured (no_self_stop_env)")
 		}
-		script :="#!/bin/sh\nexec docker rm -f -v \"$FAKE_VM\"\n"
+		script := "#!/bin/sh\nexec docker rm -f -v \"$FAKE_VM\"\n"
 		if req.Options["self_stop_fails"] == true {
 			script = "#!/bin/sh\necho 'fake: self-stop failing as asked' >&2\nexit 1\n"
 		}

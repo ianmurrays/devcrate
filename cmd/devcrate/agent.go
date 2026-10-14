@@ -15,14 +15,12 @@ import (
 
 	"github.com/ianmurrays/devcrate/internal/provider"
 	"github.com/ianmurrays/devcrate/internal/remote"
+	"github.com/ianmurrays/devcrate/internal/vm"
 )
 
-// Where the Agent's files go on the VM; devcrate-agent's main.go has the rest.
-const (
-	agentDir    = "/var/lib/devcrate/agent" // on the volume; user data installs from here at boot
-	selfStopEnv = "/run/devcrate/self-stop.env"
-	agentError  = "/var/lib/devcrate/agent-error"
-)
+// agentDir is where the Agent's files go on the VM: on the volume, as user
+// data installs from here at boot. devcrate-agent's main.go has the rest.
+const agentDir = vm.VolumeDir + "/agent"
 
 // agentPollEnv is the hidden, test-only override of the Agent's 60 s poll.
 const agentPollEnv = "DEVCRATE_TEST_AGENT_POLL"
@@ -83,7 +81,7 @@ func (e *environment) installAgent(client *ssh.Client, res provider.Result, self
 		files = append(files,
 			pushFile{agentDir + "/self-stop", 0o755, []byte(selfStopScript)},
 			// tmpfs and root-only: never on the volume or in user data.
-			pushFile{selfStopEnv, 0o600, []byte(env.String())},
+			pushFile{vm.SelfStopEnv, 0o600, []byte(env.String())},
 		)
 	}
 	for _, f := range files {
@@ -118,9 +116,9 @@ func agentBinary(goarch string) ([]byte, error) {
 // printAgentError prints the Agent's last Self-stop error, if any, to stderr,
 // removing it when clear is set.
 func printAgentError(client *ssh.Client, clear bool) error {
-	cmd := "cat " + agentError + " 2>/dev/null || true"
+	cmd := "cat " + vm.AgentError + " 2>/dev/null || true"
 	if clear {
-		cmd = "cat " + agentError + " 2>/dev/null && rm -f " + agentError + " || true"
+		cmd = "cat " + vm.AgentError + " 2>/dev/null && rm -f " + vm.AgentError + " || true"
 	}
 	var out strings.Builder
 	if err := remote.Run(client, cmd, nil, &out, os.Stderr); err != nil {
