@@ -218,7 +218,7 @@ func TestConcurrentUpAndStopAreSerialised(t *testing.T) {
 
 	up := e.Command("up")
 	must(up.Start())
-	e.WaitOutput(up, "creating "+e.Name+"…")
+	e.WaitOutput(up, "creating VM…")
 	stop := e.Command("stop")
 	must(stop.Start())
 	e.WaitOutput(stop, "waiting for another devcrate command on "+e.Name)

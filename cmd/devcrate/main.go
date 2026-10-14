@@ -154,7 +154,7 @@ func up(flags map[string]string, args []string) error {
 		time.Sleep(busyPoll)
 	}
 
-	fmt.Printf("creating %s…\n", env.Name)
+	fmt.Println("creating VM…") // "droplet" on DigitalOcean; Providers name it differently
 	res, err := env.provider.Up(env.request())
 	if err != nil {
 		return err

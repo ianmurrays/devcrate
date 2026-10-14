@@ -57,7 +57,7 @@ func TestUpWithGitURLOutsideARepo(t *testing.T) {
 	if r.Code != 0 {
 		t.Fatalf("up <git-url> exit %d", r.Code)
 	}
-	wantLines(t, r.Stdout, "creating "+e.Name+"…", "ready: ssh devcrate-"+e.Name+"  (or: devcrate ssh "+e.Name+")")
+	wantLines(t, r.Stdout, "creating VM…", "ready: ssh devcrate-"+e.Name+"  (or: devcrate ssh "+e.Name+")")
 	if out, code := e.VM("cat /var/lib/devcrate/workspace/README.md"); code != 0 || out != "fixture "+e.Name+"\n" {
 		t.Errorf("workspace README = %q (exit %d), want the cloned repo", out, code)
 	}
