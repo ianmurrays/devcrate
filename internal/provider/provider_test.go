@@ -127,6 +127,34 @@ esac
 	}
 }
 
+// Providers that ship with devcrate (DigitalOcean) sit next to its executable.
+func TestFindLooksNextToDevcrateLast(t *testing.T) {
+	shipped := t.TempDir()
+	writeProvider(t, shipped, "shipped", "")
+	old := executableDir
+	executableDir = func() (string, error) { return shipped, nil }
+	t.Cleanup(func() { executableDir = old })
+	t.Setenv("PATH", t.TempDir())
+
+	cfg := t.TempDir()
+	p, err := Find("shipped", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Path != filepath.Join(shipped, "devcrate-provider-shipped") {
+		t.Errorf("path = %s", p.Path)
+	}
+
+	// The user's own copy in the providers dir wins over the shipped one.
+	if err := os.MkdirAll(filepath.Join(cfg, "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProvider(t, filepath.Join(cfg, "providers"), "shipped", "")
+	if p, err = Find("shipped", cfg); err != nil || p.Path != filepath.Join(cfg, "providers", "devcrate-provider-shipped") {
+		t.Errorf("Find = %v, %v; want the providers dir copy", p, err)
+	}
+}
+
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
