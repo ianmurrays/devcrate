@@ -50,6 +50,8 @@ const (
 	// agent among those sshd's ~/.ssh/rc records in agentSessions.
 	agentSock     = "/run/devcrate/ssh-agent/agent.sock"
 	agentSessions = "/run/devcrate/ssh-agent-sessions"
+	// credsOwner is the devcontainer remoteUser's uid:gid, written by setup.
+	credsOwner = "/run/devcrate/creds-owner"
 	// sshRC is root's ~/.ssh/rc (on the volume). sshd runs it at the start
 	// of every session, before the command.
 	sshRC = "/root/.ssh/rc"
@@ -239,8 +241,12 @@ func relayAgent(sock, sessions string) error {
 	if err != nil {
 		return err
 	}
-	// The container user may not be root.
-	if err := os.Chmod(sock, 0o666); err != nil {
+	// For root and the devcontainer's remoteUser only, who may not be root.
+	// Setup chowns it too, once it knows the remoteUser.
+	if err := os.Chmod(sock, 0o600); err != nil {
+		return err
+	}
+	if err := chownToCredsOwner(sock); err != nil {
 		return err
 	}
 	go func() {
@@ -265,6 +271,22 @@ func relayAgent(sock, sessions string) error {
 		}
 	}()
 	return nil
+}
+
+// chownToCredsOwner gives path to the uid:gid in credsOwner, if setup has
+// written it.
+func chownToCredsOwner(path string) error {
+	data, err := os.ReadFile(credsOwner)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	var uid, gid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d:%d", &uid, &gid); err != nil {
+		return fmt.Errorf("%s: %w", credsOwner, err)
+	}
+	return os.Chown(path, uid, gid)
 }
 
 // forwardedAgent connects to the newest live forwarded agent recorded in

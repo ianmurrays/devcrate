@@ -208,6 +208,10 @@ else
 	# user, who owns the creds (devcrate's later pushes keep that owner).
 	devcontainer exec --workspace-folder "$workspace" sh -c 'echo "$(id -u):$(id -g)"' < /dev/null 9>&- > /run/devcrate/creds-owner
 	chown -R "$(cat /run/devcrate/creds-owner)" /run/devcrate/.creds
+	# The Agent's relay socket is for root and the remoteUser only (0600).
+	if [ -S "$agent_dir/agent.sock" ]; then
+		chown "$(cat /run/devcrate/creds-owner)" "$agent_dir/agent.sock"
+	fi
 	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
 	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh" 9>&-
 	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null 9>&-

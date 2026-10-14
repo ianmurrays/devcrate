@@ -160,17 +160,29 @@ func (e *environment) containerCommand(client *ssh.Client, command []string, tty
 	if len(command) > 0 {
 		script = strings.Join(command, " ") // as ssh would hand it to the VM's shell
 	}
-	flags := "-i"
+	flags := []string{"-i"}
 	if tty {
-		flags = "-it"
+		flags = []string{"-it"}
+	}
+	// The devcontainer's remoteUser, as uid:gid, which setup records.
+	var owner strings.Builder
+	if err := remote.Run(client, "cat "+credsOwner+" 2>/dev/null || true", nil, &owner, os.Stderr); err != nil {
+		return nil, err
+	}
+	if u := strings.TrimSpace(owner.String()); u != "" {
+		flags = append(flags, "-u", u)
 	}
 	// The Agent's relay to this connection's forwarded agent, if any.
-	return []string{"docker", "exec", flags, "-e", "SSH_AUTH_SOCK=" + containerAgentSock, id, "sh", "-c", shellQuote(script)}, nil
+	argv := append([]string{"docker", "exec"}, flags...)
+	return append(argv, "-e", "SSH_AUTH_SOCK="+containerAgentSock, id, "sh", "-c", shellQuote(script)), nil
 }
 
 // containerAgentSock is the Agent's SSH-agent relay, bind-mounted into the
 // devcontainer by setup.
 const containerAgentSock = "/run/devcrate/ssh-agent/agent.sock"
+
+// credsOwner is the devcontainer remoteUser's uid:gid, written by setup.
+const credsOwner = "/run/devcrate/creds-owner"
 
 // alias is the Environment's SSH host alias and HostKeyAlias.
 func (e *environment) alias() string { return "devcrate-" + e.Name }

@@ -160,6 +160,14 @@ func TestNonRootRemoteUserReadsForwardedCredentials(t *testing.T) {
 	if got := asDev(); got != first+"|file "+first {
 		t.Errorf("remoteUser's login shell sees %q, want %q", got, first+"|file "+first)
 	}
+	// devcrate ssh --container lands as the remoteUser, not the image's user.
+	if r := e.Devcrate("ssh", "--container", "--", "id -un; echo $HOME"); r.Code != 0 || r.Stdout != "dev\n/home/dev\n" {
+		t.Errorf("ssh --container -- id -un = %q exit %d, want dev with its home", r.Stdout, r.Code)
+	}
+	// The SSH-agent relay is for root and the remoteUser only.
+	if out, _ := e.VM("stat -c '%a %u' /run/devcrate/ssh-agent/agent.sock"); out != "600 1000\n" {
+		t.Errorf("agent relay socket mode and owner = %q, want 600 owned by the remoteUser's uid 1000", out)
+	}
 	// Readable by its owner only, on the VM too.
 	if out, _ := e.VM("stat -c '%a %u' /run/devcrate/creds /run/devcrate/creds/env /run/devcrate/creds/files/.config/e2e/token"); out != "700 1000\n600 1000\n600 1000\n" {
 		t.Errorf("creds modes and owners = %q, want 0700/0600 owned by the remoteUser's uid 1000", out)
