@@ -212,6 +212,29 @@ func TestMutatingCommandsWaitForTheEnvironmentLock(t *testing.T) {
 	}
 }
 
+func TestConcurrentUpAndStopAreSerialised(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+
+	up := e.Command("up")
+	must(up.Start())
+	e.WaitOutput(up, "creating "+e.Name+"…")
+	stop := e.Command("stop")
+	must(stop.Start())
+	e.WaitOutput(stop, "waiting for another devcrate command on "+e.Name)
+
+	// up finishes untouched, then stop runs.
+	if r := e.Wait(up, []string{"up"}); r.Code != 0 || !strings.Contains(r.Stdout, "ready: ssh devcrate-"+e.Name) {
+		t.Fatalf("up exit %d, want Ready", r.Code)
+	}
+	if r := e.Wait(stop, []string{"stop"}); r.Code != 0 {
+		t.Fatalf("stop exit %d", r.Code)
+	}
+	if r := e.Devcrate("status"); r.Stdout != "stopped\n" {
+		t.Errorf("status = %q, want stopped", r.Stdout)
+	}
+}
+
 func TestUpWaitsWhileBusy(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
