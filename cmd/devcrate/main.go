@@ -164,6 +164,9 @@ func up(flags map[string]string, args []string) error {
 	if err := env.writeSSHConfig(res); err != nil {
 		return err
 	}
+	if err := pushCreds(client); err != nil {
+		return err
+	}
 
 	fmt.Println("running setup…")
 	cmd := fmt.Sprintf("sh -s -- %s %t", shellQuote(env.origin), env.devcontainer)
@@ -452,6 +455,8 @@ type config struct {
 	dir          string                    // ~/.config/devcrate
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
+	ForwardEnv   []string                  `toml:"forward_env"`
+	ForwardFiles []string                  `toml:"forward_files"`
 }
 
 func loadConfig() (*config, error) {

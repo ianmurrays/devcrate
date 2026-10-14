@@ -80,6 +80,11 @@ elif [ "$(git -C "$workspace" remote get-url origin)" != "$origin" ]; then
 	exit 1
 fi
 
+# Forwarded env vars, pushed to tmpfs by devcrate just before setup. A
+# Dockerfile's `--secret id=NAME` reads them from this environment.
+creds=/run/devcrate/creds
+. "$creds/env"
+
 if [ "$devcontainer" = false ]; then
 	echo "devcontainer = false: VM-only"
 elif [ ! -f "$workspace/.devcontainer/devcontainer.json" ] && [ ! -f "$workspace/.devcontainer.json" ]; then
@@ -95,7 +100,19 @@ else
 	fi
 	# Starts the existing container if there is one; lifecycle hooks such as
 	# postCreateCommand run only when it is created.
-	devcontainer up --workspace-folder "$workspace"
+	# Lifecycle hooks get each forwarded var; the container gets the
+	# (read-only) creds directory.
+	set --
+	while IFS= read -r name; do
+		eval "value=\$$name"
+		set -- "$@" --remote-env "$name=$value"
+	done < "$creds/names"
+	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" "$@"
+
+	# The same sourcing and $HOME symlinks as on the VM, for the container user.
+	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
+	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh"
+	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done"
 fi
 
 mkdir -p /run/devcrate

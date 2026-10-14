@@ -87,6 +87,8 @@ type Env struct {
 	Name string
 	Home string
 	Dir  string // the local clone; devcrate runs here
+	// LaptopEnv is extra NAME=value environment for every devcrate command.
+	LaptopEnv []string
 }
 
 // NewEnv makes a fixture repo named e2e-<random> with `provider = "fake"` in
@@ -241,6 +243,7 @@ func (e *Env) Command(args ...string) *exec.Cmd {
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"DEVCRATE_FAKE_IMAGE="+vmImage,
 	)
+	cmd.Env = append(cmd.Env, e.LaptopEnv...)
 	cmd.Stdout, cmd.Stderr = &syncBuffer{}, &syncBuffer{}
 	return cmd
 }
