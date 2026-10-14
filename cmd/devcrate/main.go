@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -30,7 +31,7 @@ var (
 	userData string
 )
 
-const usage = "usage: devcrate up | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json]"
+const usage = "usage: devcrate up | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [name] [-- <cmd>]"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -59,14 +60,24 @@ func run(args []string) error {
 		cmd, allowed = status, []string{"--json"}
 	case "list":
 		cmd, allowed = list, []string{"--json"}
+	case "ssh":
+		cmd = sshCmd
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
+	}
+	// Everything after `--` is a remote command (ssh only), not flags.
+	var tail []string
+	if i := slices.Index(args, "--"); i >= 0 {
+		if args[0] != "ssh" {
+			return fmt.Errorf("unexpected --\n%s", usage)
+		}
+		args, tail = args[:i], args[i:]
 	}
 	flags, rest, err := parseFlags(args[1:], allowed)
 	if err != nil {
 		return err
 	}
-	return cmd(flags, rest)
+	return cmd(flags, append(rest, tail...))
 }
 
 // parseFlags splits the allowed boolean flags from positional arguments.
@@ -132,11 +143,15 @@ func up(_ map[string]bool, args []string) error {
 	}
 
 	fmt.Println("waiting for SSH…")
-	client, err := remote.Dial(res.Host, res.Port, res.User, env.key, 3*time.Minute)
+	client, err := env.dial(res, 3*time.Minute)
 	if err != nil {
 		return fmt.Errorf("connecting to %s: %w", env.Name, err)
 	}
 	defer client.Close()
+	// Before setup, so a failed setup can still be inspected over ssh.
+	if err := env.writeSSHConfig(res); err != nil {
+		return err
+	}
 
 	fmt.Println("running setup…")
 	if err := remote.Run(client, "sh -s -- "+shellQuote(env.origin), strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
@@ -197,6 +212,9 @@ func del(flags map[string]bool, args []string) error {
 	if err := env.provider.Delete(env.request()); err != nil {
 		return err
 	}
+	if err := env.removeSSHConfig(); err != nil {
+		return err
+	}
 	fmt.Printf("deleted %s\n", env.Name)
 	return nil
 }
@@ -218,7 +236,7 @@ func status(flags map[string]bool, args []string) error {
 		case "not_found":
 			state = "missing"
 		case "running":
-			if client, err := remote.Dial(res.Host, res.Port, res.User, env.key, 0); err == nil {
+			if client, err := env.dial(res, 0); err == nil {
 				if remote.Run(client, "test -f /run/devcrate/ready", nil, nil, nil) == nil {
 					state = "ready"
 				}

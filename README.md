@@ -11,6 +11,18 @@ region = "ams3" # every other key is passed to the Provider unchanged
 
 devcrate connects to VMs with its own SSH keypair, created on first use at `~/.config/devcrate/id_ed25519`.
 
+## Connecting
+
+`devcrate ssh [name]` opens a root shell on the VM, and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment.
+
+Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config` (the VM's address changes on every resume), and the first `up` adds `Include ~/.ssh/devcrate_config` to the top of `~/.ssh/config`. So plain `ssh devcrate-<name>` works too, with agent forwarding on. The VM's host key is kept on its volume and pinned in `~/.config/devcrate/known_hosts`, so a resume never causes a host key warning. `delete` removes the block; `stop` leaves it.
+
+### VS Code
+
+1. Install the Remote - SSH and Dev Containers extensions.
+2. Run **Remote-SSH: Connect to Host…** and pick `devcrate-<name>`.
+3. In that window, run **Dev Containers: Attach to Running Container…** and pick the Environment's devcontainer.
+
 ## Build
 
 Requires Go 1.25.
