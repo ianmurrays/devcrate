@@ -1,12 +1,18 @@
 #!/bin/sh
 # devcrate setup: runs on the VM inside `up`'s SSH session as
-# `sh -s -- <origin> <devcontainer> <rebuild>`, where <devcontainer> is false
-# for a VM-only Environment and <rebuild> is true for `up --rebuild`. Any failure exits non-zero without the Ready marker,
-# which is written last.
+# `sh -s -- <origin> <devcontainer> <setup_script> <in_container> <rebuild>`,
+# where <devcontainer> is false for a VM-only Environment, <setup_script> is
+# the repo's script (a path in the repo, or empty), <in_container> is true to
+# run the user's script in the devcontainer and <rebuild> is true for
+# `up --rebuild`. devcrate pushes the user's script
+# to /run/devcrate/user-setup.sh first, if there is one. Any failure exits
+# non-zero without the Ready marker, which is written last.
 set -eu
 origin=$1
 devcontainer=$2
-rebuild=$3
+setup_script=$3
+in_container=$4
+rebuild=$5
 state=/var/lib/devcrate
 workspace=$state/workspace
 # The devcontainer CLI lives on the root disk, like Docker: a snapshot image
@@ -39,6 +45,19 @@ console.log(hash.update(JSON.stringify([picked, text, process.argv[1]])).digest(
 '
 
 rm -f /run/devcrate/ready
+
+# Everything below also goes to setup.log on the volume (stdout and stderr
+# stay separate on the way to devcrate). The log holds the latest setup only.
+mkdir -p /run/devcrate
+rm -f /run/devcrate/stdout /run/devcrate/stderr
+mkfifo /run/devcrate/stdout /run/devcrate/stderr
+: > "$state/setup.log"
+tee -a "$state/setup.log" < /run/devcrate/stdout &
+tee -a "$state/setup.log" < /run/devcrate/stderr >&2 &
+exec > /run/devcrate/stdout 2> /run/devcrate/stderr
+rm /run/devcrate/stdout /run/devcrate/stderr
+# Let the tees drain before the session ends; the exit status is kept.
+trap 'exec >&- 2>&-; wait' EXIT
 
 # at_least <version> <minimum>: dotted-version comparison.
 at_least() {
@@ -105,9 +124,16 @@ elif [ "$(git -C "$workspace" remote get-url origin)" != "$origin" ]; then
 	exit 1
 fi
 
+if [ -n "$setup_script" ]; then
+	echo "running $setup_script…"
+	(cd "$workspace" && if [ -x "./$setup_script" ]; then "./$setup_script"; else sh "./$setup_script"; fi) < /dev/null
+fi
+
 if [ "$devcontainer" = false ]; then
+	in_container=false
 	echo "devcontainer = false: VM-only"
 elif [ ! -f "$workspace/.devcontainer/devcontainer.json" ] && [ ! -f "$workspace/.devcontainer.json" ]; then
+	in_container=false
 	echo "no devcontainer.json: VM-only"
 else
 	version=$(devcontainer --version 2>/dev/null || true)
@@ -132,6 +158,19 @@ else
 	devcontainer up "$@"
 	# Only after success, so a failed Rebuild is retried by the next up.
 	echo "$hash" > "$state/devcontainer.hash"
+fi
+
+# The scripts get /dev/null as stdin: setup's own stdin is the rest of this
+# script.
+user_script=/run/devcrate/user-setup.sh
+if [ -f "$user_script" ]; then
+	if [ "$in_container" = true ]; then
+		echo "running ~/.config/devcrate/setup.sh in the devcontainer…"
+		devcontainer exec --workspace-folder "$workspace" sh -s < "$user_script"
+	else
+		echo "running ~/.config/devcrate/setup.sh…"
+		sh "$user_script" < /dev/null
+	fi
 fi
 
 mkdir -p /run/devcrate
