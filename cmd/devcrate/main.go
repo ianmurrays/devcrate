@@ -32,7 +32,7 @@ var (
 	userData string
 )
 
-const usage = "usage: devcrate up [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [name] [-- <cmd>]  (each takes --provider <name>)"
+const usage = "usage: devcrate up [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>]  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -63,7 +63,7 @@ func run(args []string) error {
 	case "list":
 		cmd, allowed = list, append(allowed, "--json")
 	case "ssh":
-		cmd = sshCmd
+		cmd, allowed = sshCmd, append(allowed, "--container")
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
@@ -166,7 +166,8 @@ func up(flags map[string]string, args []string) error {
 	}
 
 	fmt.Println("running setup…")
-	if err := remote.Run(client, "sh -s -- "+shellQuote(env.origin), strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
+	cmd := fmt.Sprintf("sh -s -- %s %t", shellQuote(env.origin), env.devcontainer)
+	if err := remote.Run(client, cmd, strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
 
@@ -315,6 +316,8 @@ type environment struct {
 	provider *provider.Provider
 	key      *remote.Key
 	searched []string // Providers asked when resolving a bare name
+	// devcontainer is false when the Environment is VM-only by choice.
+	devcontainer bool
 }
 
 // fromRepo is the Environment of the repo at the git URL, if given, else of
@@ -346,7 +349,13 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &environment{Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key}, nil
+	devcontainer := true
+	for _, v := range []*bool{cfg.Devcontainer, ctx.Devcontainer} { // repo wins
+		if v != nil {
+			devcontainer = *v
+		}
+	}
+	return &environment{Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer}, nil
 }
 
 // resolve finds the Environment for `[name]`. Without a name, it is the
@@ -440,8 +449,9 @@ func (e *environment) request() provider.Request {
 
 // config is the user config, ~/.config/devcrate/config.toml.
 type config struct {
-	dir       string                    // ~/.config/devcrate
-	Providers map[string]map[string]any `toml:"providers"`
+	dir          string                    // ~/.config/devcrate
+	Providers    map[string]map[string]any `toml:"providers"`
+	Devcontainer *bool                     `toml:"devcontainer"`
 }
 
 func loadConfig() (*config, error) {

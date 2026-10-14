@@ -21,6 +21,8 @@ type Context struct {
 	Name     string         // Environment name: `name` from .devcrate.toml, else the repo name from Origin
 	Provider string         // `provider` from .devcrate.toml
 	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
+	// Devcontainer is `devcontainer` from .devcrate.toml, nil when unset.
+	Devcontainer *bool
 }
 
 // ErrNotRepo is Load's error when dir is not inside a git repo.
@@ -77,6 +79,14 @@ func parse(origin, devcrateToml string) (*Context, error) {
 	delete(c.Options, "provider")
 	if c.Provider == "" {
 		return nil, errors.New(`no provider set: add provider = "<name>" to .devcrate.toml`)
+	}
+	if v, ok := c.Options["devcontainer"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return nil, errors.New(".devcrate.toml: devcontainer must be true or false")
+		}
+		c.Devcontainer = &b
+		delete(c.Options, "devcontainer")
 	}
 	if name, ok := c.Options["name"]; ok {
 		c.Name = fmt.Sprint(name)

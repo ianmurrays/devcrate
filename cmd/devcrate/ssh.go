@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 
 	"github.com/ianmurrays/devcrate/internal/provider"
 	"github.com/ianmurrays/devcrate/internal/remote"
@@ -52,7 +53,14 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to %s: %w", env.Name, err)
 	}
+	tty := len(command) == 0 && term.IsTerminal(int(os.Stdin.Fd()))
+	if flags["--container"] != "" {
+		command, err = env.containerCommand(client, command, tty)
+	}
 	client.Close()
+	if err != nil {
+		return err
+	}
 
 	bin, err := exec.LookPath("ssh")
 	if err != nil {
@@ -63,11 +71,42 @@ func sshCmd(flags map[string]string, args []string) error {
 		return err
 	}
 	// -F /dev/null: everything comes from here, never the user's ssh config.
-	argv := []string{"ssh", "-F", "/dev/null", "-A",
+	argv := []string{"ssh", "-F", "/dev/null", "-A"}
+	if tty {
+		argv = append(argv, "-t") // ssh would not allocate one for a command
+	}
+	argv = append(argv,
 		"-i", filepath.Join(dir, "id_ed25519"), "-o", "IdentitiesOnly=yes",
-		"-o", "HostKeyAlias=" + env.alias(), "-o", "UserKnownHostsFile=" + filepath.Join(dir, "known_hosts"),
-		"-p", strconv.Itoa(res.Port), "-l", res.User, "--", res.Host}
+		"-o", "HostKeyAlias="+env.alias(), "-o", "UserKnownHostsFile="+filepath.Join(dir, "known_hosts"),
+		"-p", strconv.Itoa(res.Port), "-l", res.User, "--", res.Host)
 	return syscall.Exec(bin, append(argv, command...), os.Environ())
+}
+
+// containerCommand wraps command (a login shell when empty) in a docker exec
+// into the Environment's running devcontainer. With no running devcontainer
+// it fails rather than fall back to the VM.
+func (e *environment) containerCommand(client *ssh.Client, command []string, tty bool) ([]string, error) {
+	var out strings.Builder
+	find := "docker ps -a --filter label=devcontainer.local_folder=/var/lib/devcrate/workspace --format '{{.ID}} {{.State}}'"
+	if err := remote.Run(client, find, nil, &out, os.Stderr); err != nil {
+		return nil, fmt.Errorf("looking for %s's devcontainer: %w", e.Name, err)
+	}
+	id, state, _ := strings.Cut(strings.TrimSpace(out.String()), " ")
+	switch {
+	case id == "":
+		return nil, fmt.Errorf("%s has no devcontainer; use devcrate ssh without --container for the VM", e.Name)
+	case state != "running":
+		return nil, fmt.Errorf("%s's devcontainer is %s, not running; run devcrate up in its repo", e.Name, state)
+	}
+	script := "if command -v bash >/dev/null; then exec bash -l; fi; exec sh -l"
+	if len(command) > 0 {
+		script = strings.Join(command, " ") // as ssh would hand it to the VM's shell
+	}
+	flags := "-i"
+	if tty {
+		flags = "-it"
+	}
+	return []string{"docker", "exec", flags, id, "sh", "-c", shellQuote(script)}, nil
 }
 
 // alias is the Environment's SSH host alias and HostKeyAlias.
