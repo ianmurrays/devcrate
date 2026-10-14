@@ -349,23 +349,6 @@ func (e *Env) VM(script string) (out string, code int) {
 	return string(b), 0
 }
 
-// LoadImage copies an image from the host's Docker (pulling it there if
-// missing) into the running VM's Docker, so a devcontainer test does not
-// depend on Docker Hub's pull rate limit. Call it after an `up`, which moves
-// the VM's Docker storage onto the volume.
-func (e *Env) LoadImage(ref string) {
-	e.t.Helper()
-	if exec.Command("docker", "image", "inspect", ref).Run() != nil {
-		if out, err := exec.Command("docker", "pull", "-q", ref).CombinedOutput(); err != nil {
-			e.t.Fatalf("docker pull %s: %v\n%s", ref, err, out)
-		}
-	}
-	cmd := exec.Command("sh", "-c", `docker save "$1" | docker exec -i "$2" docker load -q`, "sh", ref, e.Container())
-	if out, err := cmd.CombinedOutput(); err != nil {
-		e.t.Fatalf("loading %s into the VM: %v\n%s", ref, err, out)
-	}
-}
-
 // ContainerID is the fake VM's container ID, or "" when there is none.
 func (e *Env) ContainerID() string {
 	b, _ := exec.Command("docker", "inspect", "-f", "{{.Id}}", e.Container()).Output()
