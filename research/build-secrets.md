@@ -107,9 +107,9 @@ Spec: `build.options` is "An array of Docker image build options that should be 
 ### Flags
 
 - `up` options (`src/spec-node/devContainersSpecCLI.ts:133-179`) include `--secrets-file` (`:172`), `--override-config` (`:145`), `--remote-env`, `--cache-from`/`--cache-to` and `--buildkit auto|never`. There is no `--secret`, `--ssh` or build-option passthrough.
-- `build` options (`:564-590`) have neither `--secrets-file` nor `--override-config`.
+- `build` options (`:564-589`) have neither `--secrets-file` nor `--override-config`.
 - `--secrets-file` values go to lifecycle hooks and dotfiles (`src/spec-common/injectHeadless.ts:348-410`) and to log masking (`src/spec-node/devContainers.ts:118, 302-306`). They are never added to the build command.
-- `--override-config`: `documents.readDocument(overrideConfigFile ?? configFile)` reads the override **instead of** the repo file (`src/spec-node/configContainer.ts:84`). `config.configFilePath = configFile` (`:109`) keeps relative paths anchored at the repo's `.devcontainer/`.
+- `--override-config`: `documents.readDocument(overrideConfigFile ?? configFile)` reads the override **instead of** the repo file (`src/spec-node/configContainer.ts:84`). `config.configFilePath = configFile` (`:108`) keeps relative paths anchored at the repo's `.devcontainer/`.
 
 ### Image metadata
 
