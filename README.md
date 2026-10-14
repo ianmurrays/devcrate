@@ -70,6 +70,14 @@ Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config
 2. Run **Remote-SSH: Connect to Host…** and pick `devcrate-<name>`.
 3. In that window, run **Dev Containers: Attach to Running Container…** and pick the Environment's devcontainer.
 
+## Forwarding ports
+
+```sh
+devcrate forward [name] [-p 8080] [-p 3001:3000]
+```
+
+Forwards `forwardPorts` from the devcontainer.json in the Environment's clone, plus each `-p <remote>` or `-p <local>:<remote>`, to `127.0.0.1` on the laptop until Ctrl-C. Ports are dialed from inside the devcontainer (on the VM when there is none), so servers bound to `127.0.0.1` there and `"host:port"` entries such as compose service names work. `portsAttributes.label` names each port in the output. A busy local port is skipped with a warning; remap it with `-p`. `forward` never starts an Environment, exits when its SSH connection drops, and keeps the Environment from being Idle while it runs.
+
 ## Keep-alive
 
 An Environment stops itself once it has been Idle (no SSH connection, no setup running, no Keep-alive) for `idle_timeout`. To leave work running with nobody connected, hold it with a Keep-alive:

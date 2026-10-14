@@ -33,7 +33,7 @@ var (
 	userData string
 )
 
-const usage = "usage: devcrate up [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration>  (each takes --provider <name>)"
+const usage = "usage: devcrate up [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -67,6 +67,8 @@ func run(args []string) error {
 		cmd, allowed = sshCmd, append(allowed, "--container")
 	case "keep-alive":
 		cmd = keepAlive
+	case "forward":
+		cmd, allowed = forward, append(allowed, "-p=")
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
@@ -87,7 +89,7 @@ func run(args []string) error {
 
 // parseFlags splits the allowed flags from positional arguments. A boolean
 // flag's value is "true"; a value flag (listed as "--name=") takes the next
-// argument or --name=value.
+// argument or --name=value; repeated, its values are comma-joined.
 func parseFlags(args, allowed []string) (map[string]string, []string, error) {
 	flags := map[string]string{}
 	var rest []string
@@ -107,6 +109,9 @@ func parseFlags(args, allowed []string) (map[string]string, []string, error) {
 					return nil, nil, fmt.Errorf("flag %s needs a value\n%s", name, usage)
 				}
 				value = args[i]
+			}
+			if flags[name] != "" {
+				value = flags[name] + "," + value
 			}
 			flags[name] = value
 		default:
