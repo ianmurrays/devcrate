@@ -63,8 +63,9 @@ flock 9
 trap 'touch /run/devcrate/setup.lock; exec >&- 2>&-; wait' EXIT
 
 # A sleeping laptop's session drops after about 3 minutes, so it stops
-# holding the Environment awake.
-sshd_conf=$(printf 'ClientAliveInterval 60\nClientAliveCountMax 3')
+# holding the Environment awake. devcrate forward opens one session per
+# forwarded TCP connection, more than the default 10.
+sshd_conf=$(printf 'ClientAliveInterval 60\nClientAliveCountMax 3\nMaxSessions 200')
 if [ "$(cat /etc/ssh/sshd_config.d/devcrate.conf 2>/dev/null)" != "$sshd_conf" ]; then
 	mkdir -p /etc/ssh/sshd_config.d
 	echo "$sshd_conf" > /etc/ssh/sshd_config.d/devcrate.conf
