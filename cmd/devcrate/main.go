@@ -27,10 +27,15 @@ import (
 )
 
 var (
+	//go:embed volume.sh
+	volumeScript string
 	//go:embed setup.sh
-	setupScript string
+	setupSh string
 	//go:embed userdata.sh
-	userData string
+	userDataSh string
+	// Both put the volume's state in place with volume.sh's function.
+	setupScript = volumeScript + setupSh
+	userData    = volumeScript + userDataSh
 )
 
 const usage = "usage: devcrate up [--rebuild] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"

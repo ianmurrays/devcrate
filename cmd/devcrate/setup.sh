@@ -1,5 +1,5 @@
-#!/bin/sh
-# devcrate setup: runs on the VM inside `up`'s SSH session as
+# devcrate setup (sent after volume.sh): runs on the VM inside `up`'s SSH
+# session as
 # `sh -s -- <origin> <devcontainer> <setup_script> <in_container> <rebuild>`,
 # where <devcontainer> is false for a VM-only Environment, <setup_script> is
 # the repo's script (a path in the repo, or empty), <in_container> is true to
@@ -62,6 +62,10 @@ flock 9
 # Also let the tees drain before the session ends; the exit status is kept.
 trap 'touch /run/devcrate/setup.lock; exec >&- 2>&-; wait' EXIT
 
+# The volume's sshd host keys and /root, in case boot did not put them in
+# place (volume.sh).
+restore_from_volume keep
+
 # A sleeping laptop's session drops after about 3 minutes, so it stops
 # holding the Environment awake. devcrate forward opens one session per
 # forwarded TCP connection, more than the default 10.
@@ -69,6 +73,9 @@ sshd_conf=$(printf 'ClientAliveInterval 60\nClientAliveCountMax 3\nMaxSessions 2
 if [ "$(cat /etc/ssh/sshd_config.d/devcrate.conf 2>/dev/null)" != "$sshd_conf" ]; then
 	mkdir -p /etc/ssh/sshd_config.d
 	echo "$sshd_conf" > /etc/ssh/sshd_config.d/devcrate.conf
+	ssh_changed=1
+fi
+if [ -n "$ssh_changed" ]; then
 	systemctl reload ssh 2>/dev/null || systemctl reload sshd
 fi
 
