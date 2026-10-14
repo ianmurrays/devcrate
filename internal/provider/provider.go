@@ -52,6 +52,25 @@ func Find(name, configDir string) (*Provider, error) {
 func (p *Provider) Up(req Request) (Result, error)     { return p.result("up", req) }
 func (p *Provider) Status(req Request) (Result, error) { return p.result("status", req) }
 
+// Stop ends compute billing and keeps the disk. Its stdout is ignored.
+func (p *Provider) Stop(req Request) error { return p.run("stop", req, nil) }
+
+// Delete removes everything the Environment owns. Its stdout is ignored.
+func (p *Provider) Delete(req Request) error { return p.run("delete", req, nil) }
+
+// Item is one entry of `list`.
+type Item struct {
+	EnvironmentID string `json:"environment_id"`
+	State         string `json:"state"`
+}
+
+// List returns every Environment this Provider knows about.
+func (p *Provider) List() ([]Item, error) {
+	var items []Item
+	err := p.run("list", Request{}, &items)
+	return items, err
+}
+
 func (p *Provider) result(verb string, req Request) (Result, error) {
 	var res Result
 	err := p.run(verb, req, &res)
@@ -70,6 +89,9 @@ func (p *Provider) run(verb string, req Request, out any) error {
 	cmd.Stderr = p.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("provider %s %s failed: %w", p.Name, verb, err)
+	}
+	if out == nil {
+		return nil
 	}
 	if err := json.Unmarshal(stdout.Bytes(), out); err != nil {
 		return fmt.Errorf("provider %s %s: invalid JSON on stdout: %w", p.Name, verb, err)

@@ -3,7 +3,10 @@
 // a named Docker volume at /var/lib/devcrate. The container's port 22 is
 // published on 127.0.0.1, since container IPs are not routable from macOS.
 //
-// Test plumbing: the option `fail = "<verb>"` makes that verb fail.
+// A stopped Environment is its volume with no container.
+//
+// Test plumbing: the option `fail = "<verb>"` makes that verb fail, and
+// `busy_while = "<host path>"` makes status report busy while that file exists.
 package main
 
 import (
@@ -48,8 +51,24 @@ func main() {
 		out = up(req)
 	case "status":
 		out = status(req.EnvironmentID)
+		if path, ok := req.Options["busy_while"].(string); ok {
+			if _, err := os.Stat(path); err == nil {
+				out = result{State: "busy"}
+			}
+		}
 	case "list":
 		out = list()
+	case "stop":
+		// A stopped fake VM has no container, only its volume, like a
+		// destroyed droplet with its block volume left behind.
+		removeContainer(req.EnvironmentID)
+		return
+	case "delete":
+		removeContainer(req.EnvironmentID)
+		if volumeExists(name(req.EnvironmentID)) {
+			docker(nil, "volume", "rm", name(req.EnvironmentID))
+		}
+		return
 	default:
 		fail("unknown verb %q", verb)
 	}
@@ -96,6 +115,9 @@ func status(env string) result {
 	c := name(env)
 	switch containerState(c) {
 	case "":
+		if volumeExists(c) {
+			return result{State: "stopped"}
+		}
 		return result{State: "not_found"}
 	case "running":
 		hostPort := strings.TrimSpace(docker(nil, "port", c, "22/tcp"))
@@ -117,11 +139,22 @@ type listItem struct {
 
 func list() []listItem {
 	items := []listItem{}
-	out := docker(nil, "ps", "-a", "--filter", "label=devcrate.fake=1", "--format", `{{.Label "devcrate.environment"}}`)
+	// Every Environment has a volume; a stopped one has nothing else.
+	out := docker(nil, "volume", "ls", "--filter", "label=devcrate.fake=1", "--format", `{{.Label "devcrate.environment"}}`)
 	for _, env := range strings.Fields(out) {
 		items = append(items, listItem{env, status(env).State})
 	}
 	return items
+}
+
+func removeContainer(env string) {
+	if containerState(name(env)) != "" {
+		docker(nil, "rm", "-f", "-v", name(env)) // -v: the anonymous docker/containerd volumes
+	}
+}
+
+func volumeExists(v string) bool {
+	return exec.Command("docker", "volume", "inspect", v).Run() == nil
 }
 
 // containerState is Docker's state word for the container, or "" if missing.

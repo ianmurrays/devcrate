@@ -10,13 +10,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 var (
@@ -118,6 +121,63 @@ type Result struct {
 // Devcrate runs the devcrate binary in the local clone with HOME isolated.
 func (e *Env) Devcrate(args ...string) Result {
 	e.t.Helper()
+	return e.DevcrateIn(e.Dir, args...)
+}
+
+// DevcrateIn runs devcrate in dir instead of the local clone.
+func (e *Env) DevcrateIn(dir string, args ...string) Result {
+	e.t.Helper()
+	cmd := e.Command(args...)
+	cmd.Dir = dir
+	return e.Wait(cmd, args)
+}
+
+// DevcrateTTY runs devcrate on a pseudo-terminal via BSD script(1) (macOS),
+// typing input once the terminal shows prompt. The terminal's output, prompt
+// included, is in Stdout.
+func (e *Env) DevcrateTTY(prompt, input string, args ...string) Result {
+	e.t.Helper()
+	cmd := e.Command(args...)
+	script, err := exec.LookPath("script")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	cmd.Path, cmd.Args = script, append([]string{"script", "-q", "/dev/null"}, cmd.Args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		e.t.Fatal(err)
+	}
+	e.WaitOutput(cmd, prompt)
+	// Leave stdin open: on EOF script(1) types ^D, which can overtake input.
+	// Wait closes it after devcrate exits.
+	io.WriteString(stdin, input)
+	return e.Wait(cmd, args)
+}
+
+// syncBuffer is a bytes.Buffer safe to read while a command writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Command is an unstarted devcrate command in the local clone with HOME
+// isolated, its output captured for Wait. Start it to run it in the background.
+func (e *Env) Command(args ...string) *exec.Cmd {
 	cmd := exec.Command(filepath.Join(binDir, "devcrate"), args...)
 	cmd.Dir = e.Dir
 	cmd.Env = append(os.Environ(),
@@ -125,10 +185,32 @@ func (e *Env) Devcrate(args ...string) Result {
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"DEVCRATE_FAKE_IMAGE="+vmImage,
 	)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	r := Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	cmd.Stdout, cmd.Stderr = &syncBuffer{}, &syncBuffer{}
+	return cmd
+}
+
+// WaitOutput waits up to 30 s for a started Command's stdout or stderr to
+// contain s, failing the test if it never does.
+func (e *Env) WaitOutput(cmd *exec.Cmd, s string) {
+	e.t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if strings.Contains(fmt.Sprint(cmd.Stdout), s) || strings.Contains(fmt.Sprint(cmd.Stderr), s) {
+			return
+		}
+	}
+	e.t.Fatalf("devcrate never printed %q; stdout %q stderr %q", s, cmd.Stdout, cmd.Stderr)
+}
+
+// Wait runs cmd from Command (or waits for it, if started) and logs its output.
+func (e *Env) Wait(cmd *exec.Cmd, args []string) Result {
+	e.t.Helper()
+	var err error
+	if cmd.Process == nil {
+		err = cmd.Run()
+	} else {
+		err = cmd.Wait()
+	}
+	r := Result{Stdout: fmt.Sprint(cmd.Stdout), Stderr: fmt.Sprint(cmd.Stderr)}
 	if exit, ok := err.(*exec.ExitError); ok {
 		r.Code = exit.ExitCode()
 	} else if err != nil {
@@ -136,6 +218,11 @@ func (e *Env) Devcrate(args ...string) Result {
 	}
 	e.t.Logf("devcrate %s -> exit %d\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), r.Code, r.Stdout, r.Stderr)
 	return r
+}
+
+// VolumeExists reports whether the fake Environment's volume exists.
+func (e *Env) VolumeExists() bool {
+	return exec.Command("docker", "volume", "inspect", e.Container()).Run() == nil
 }
 
 // Container is the fake VM's Docker container name.

@@ -91,6 +91,41 @@ func TestRunPassesStderrAndFailsOnNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestStopDeleteAndList(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "verbs")
+	writeProvider(t, dir, "test", `echo "$1" >> `+log+`
+cat > /dev/null
+case $1 in
+list) echo '[{"environment_id":"api","state":"running"},{"environment_id":"web","state":"stopped"}]' ;;
+esac
+`)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	p, err := Find("test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// stop and delete print nothing on stdout; that is not an error.
+	if err := p.Stop(Request{EnvironmentID: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Delete(Request{EnvironmentID: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := p.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Item{{EnvironmentID: "api", State: "running"}, {EnvironmentID: "web", State: "stopped"}}
+	if mustJSON(items) != mustJSON(want) {
+		t.Errorf("list = %+v, want %+v", items, want)
+	}
+	verbs, _ := os.ReadFile(log)
+	if string(verbs) != "stop\ndelete\nlist\n" {
+		t.Errorf("verbs run = %q", verbs)
+	}
+}
+
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
