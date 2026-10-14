@@ -309,8 +309,12 @@ func list(flags map[string]string, _ []string) error {
 	if flags["--provider"] != "" {
 		names = []string{flags["--provider"]}
 	} else if ctx, err := repo.Load("."); err == nil {
-		if _, ok := cfg.Providers[ctx.Provider]; !ok {
-			names = append(names, ctx.Provider)
+		p := ctx.Provider
+		if p == "" {
+			p = cfg.Provider
+		}
+		if _, ok := cfg.Providers[p]; !ok && p != "" {
+			names = append(names, p)
 		}
 	}
 	type row struct {
@@ -376,12 +380,17 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 	if err != nil {
 		return nil, err
 	}
-	if providerName == "" {
-		providerName = ctx.Provider
-	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
+	}
+	for _, p := range []string{ctx.Provider, cfg.Provider} { // repo wins
+		if providerName == "" {
+			providerName = p
+		}
+	}
+	if providerName == "" {
+		return nil, fmt.Errorf(`no provider set: add provider = "<name>" to .devcrate.toml or %s`, filepath.Join(cfg.dir, "config.toml"))
 	}
 	p, err := provider.Find(providerName, cfg.dir)
 	if err != nil {
@@ -513,6 +522,7 @@ func (e *environment) request() provider.Request {
 // config is the user config, ~/.config/devcrate/config.toml.
 type config struct {
 	dir          string                    // ~/.config/devcrate
+	Provider     string                    `toml:"provider"` // used when .devcrate.toml sets none
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
 	ForwardEnv   []string                  `toml:"forward_env"`
