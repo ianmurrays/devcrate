@@ -2,7 +2,7 @@
 
 A local CLI that runs dev Environments on cloud VMs, stops them when idle, and connects to them over SSH. Run `devcrate up` in a local clone to get an Environment for that repo, and `devcrate status` to see its state (`ready`, `running`, `busy`, `stopped` or `missing`).
 
-Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH` or in `~/.config/devcrate/providers/` that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`).
+Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH`, in `~/.config/devcrate/providers/` or next to the `devcrate` executable, that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`). devcrate ships with the DigitalOcean Provider: see `providers/digitalocean/README.md` for installing `doctl`, the Self-stop token and building the base image.
 
 ## Configuration
 
