@@ -154,6 +154,17 @@ func up(flags map[string]string, args []string) error {
 		time.Sleep(busyPoll)
 	}
 
+	// Idle stop needs the Provider's self-stop script, and the verb fails
+	// when no Self-stop credential is configured: ask before Up creates
+	// anything.
+	noCredential := fmt.Sprintf("so %s could not stop itself when Idle: configure the Provider's Self-stop credential (see its README), or set idle_timeout = 0 to turn idle stop off", env.Name)
+	var selfStop string
+	if env.idleTimeout != 0 {
+		if selfStop, err = env.provider.SelfStop(env.request()); err != nil {
+			return fmt.Errorf("%w, %s", err, noCredential)
+		}
+	}
+
 	fmt.Println("creating VM…") // "droplet" on DigitalOcean; Providers name it differently
 	res, err := env.provider.Up(env.request())
 	if err != nil {
@@ -163,7 +174,7 @@ func up(flags map[string]string, args []string) error {
 		return fmt.Errorf("provider %s up returned state %q, want running", env.provider.Name, res.State)
 	}
 	if env.idleTimeout != 0 && len(res.SelfStopEnv) == 0 {
-		return fmt.Errorf("provider %s returned no self_stop_env, so %s could not stop itself when Idle: configure the Provider's Self-stop credential (see its README), or set idle_timeout = 0 to turn idle stop off", env.provider.Name, env.Name)
+		return fmt.Errorf("provider %s returned no self_stop_env, %s", env.provider.Name, noCredential)
 	}
 
 	fmt.Println("waiting for SSH…")
@@ -180,7 +191,7 @@ func up(flags map[string]string, args []string) error {
 		return err
 	}
 
-	if err := env.installAgent(client, res); err != nil {
+	if err := env.installAgent(client, res, selfStop); err != nil {
 		return fmt.Errorf("installing the Agent: %w", err)
 	}
 

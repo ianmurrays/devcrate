@@ -141,9 +141,13 @@ func TestUpFailsWithoutSelfStopCredential(t *testing.T) {
 	e := NewEnv(t)
 	e.WriteFile(".devcrate.toml", "provider = \"fake\"\nno_self_stop_env = true\n")
 	r := e.Devcrate("up")
-	if r.Code != 1 || !strings.Contains(r.Stderr, "devcrate: provider fake returned no self_stop_env, so "+e.Name+" could not stop itself when Idle") ||
+	if r.Code != 1 || !strings.Contains(r.Stderr, e.Name+" could not stop itself when Idle") ||
 		!strings.Contains(r.Stderr, "idle_timeout = 0") {
 		t.Errorf("up without self_stop_env = exit %d stderr %q, want exit 1 explaining idle stop cannot work", r.Code, r.Stderr)
+	}
+	// It fails before the Provider creates anything.
+	if e.ContainerID() != "" || e.VolumeExists() {
+		t.Error("up without a Self-stop credential created the VM or its volume")
 	}
 }
 
