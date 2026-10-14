@@ -154,6 +154,9 @@ func up(flags map[string]string, args []string) error {
 	if res.State != "running" {
 		return fmt.Errorf("provider %s up returned state %q, want running", env.provider.Name, res.State)
 	}
+	if env.idleTimeout != 0 && len(res.SelfStopEnv) == 0 {
+		return fmt.Errorf("provider %s returned no self_stop_env, so %s could not stop itself when Idle: configure the Provider's Self-stop credential (see its README), or set idle_timeout = 0 to turn idle stop off", env.provider.Name, env.Name)
+	}
 
 	fmt.Println("waiting for SSH…")
 	client, err := env.dial(res, 3*time.Minute)
@@ -164,6 +167,10 @@ func up(flags map[string]string, args []string) error {
 	// Before setup, so a failed setup can still be inspected over ssh.
 	if err := env.writeSSHConfig(res); err != nil {
 		return err
+	}
+
+	if err := env.installAgent(client, res); err != nil {
+		return fmt.Errorf("installing the Agent: %w", err)
 	}
 
 	// setup.sh runs the user's script from here.
@@ -328,6 +335,8 @@ type environment struct {
 	searched []string // Providers asked when resolving a bare name
 	// devcontainer is false when the Environment is VM-only by choice.
 	devcontainer bool
+	// idleTimeout of continuous Idle makes the Agent Self-stop; 0 never.
+	idleTimeout time.Duration
 	// setupScript is the repo's setup_script; userScript is the user's
 	// ~/.config/devcrate/setup.sh, nil when there is none.
 	setupScript string
@@ -371,6 +380,15 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 			devcontainer = *v
 		}
 	}
+	idleTimeout := repo.DefaultIdleTimeout
+	if cfg.IdleTimeout != nil {
+		if idleTimeout, err = repo.ParseIdleTimeout(cfg.IdleTimeout); err != nil {
+			return nil, fmt.Errorf("%s: %w", filepath.Join(cfg.dir, "config.toml"), err)
+		}
+	}
+	if ctx.IdleTimeout != nil { // repo wins
+		idleTimeout = *ctx.IdleTimeout
+	}
 	if _, ok := ctx.Options["setup_script_in_container"]; ok {
 		fmt.Fprintln(os.Stderr, "devcrate: ignoring setup_script_in_container in .devcrate.toml: it is only read from ~/.config/devcrate/config.toml")
 		delete(ctx.Options, "setup_script_in_container")
@@ -382,6 +400,7 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 	return &environment{
 		Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
 		setupScript: ctx.SetupScript, userScript: userScript, userScriptInContainer: cfg.SetupScriptInContainer,
+		idleTimeout: idleTimeout,
 	}, nil
 }
 
@@ -479,6 +498,7 @@ type config struct {
 	dir          string                    // ~/.config/devcrate
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
+	IdleTimeout  any                       `toml:"idle_timeout"` // see repo.ParseIdleTimeout
 	// SetupScriptInContainer runs ~/.config/devcrate/setup.sh in the
 	// devcontainer instead of on the VM.
 	SetupScriptInContainer bool `toml:"setup_script_in_container"`
