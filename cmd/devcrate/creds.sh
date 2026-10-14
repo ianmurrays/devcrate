@@ -19,6 +19,11 @@ tar -x --no-same-owner -C "$new"
 rm -rf "$data/files"
 mv "$new/files" "$new/names" "$new/env" "$data/"
 rmdir "$new"
+# Owned by the devcontainer's remoteUser (setup records its uid:gid), so it
+# can read them; still unreadable to anyone else. Root reads them regardless.
+if [ -f /run/devcrate/creds-owner ]; then
+	chown -R "$(cat /run/devcrate/creds-owner)" "$data"
+fi
 
 echo "if [ -r $creds/env ]; then . $creds/env; fi" > /etc/profile.d/devcrate-creds.sh
 chmod 644 /etc/profile.d/devcrate-creds.sh

@@ -138,6 +138,42 @@ func TestForwardedCredentialsInTheDevcontainer(t *testing.T) {
 	}
 }
 
+func TestNonRootRemoteUserReadsForwardedCredentials(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	must(os.MkdirAll(filepath.Join(e.Dir, ".devcontainer"), 0o755))
+	e.WriteFile(".devcontainer/devcontainer.json", `{"build": {"dockerfile": "Dockerfile"}, "remoteUser": "dev"}`)
+	e.WriteFile(".devcontainer/Dockerfile", "FROM alpine:3.20\nRUN adduser -D -u 1000 dev\n")
+	e.Push()
+	e.UserConfig(forwardConfig)
+	first := randomToken()
+	e.forward(first)
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up exit %d", r.Code)
+	}
+	asDev := func() string {
+		out, _ := e.VM("docker exec -u dev $(docker ps -q --filter label=devcontainer.local_folder=/var/lib/devcrate/workspace) sh -lc " + shellQuote(loginShellSees))
+		return out
+	}
+	if got := asDev(); got != first+"|file "+first {
+		t.Errorf("remoteUser's login shell sees %q, want %q", got, first+"|file "+first)
+	}
+	// Readable by its owner only, on the VM too.
+	if out, _ := e.VM("stat -c '%a %u' /run/devcrate/creds /run/devcrate/creds/env /run/devcrate/creds/files/.config/e2e/token"); out != "700 1000\n600 1000\n600 1000\n" {
+		t.Errorf("creds modes and owners = %q, want 0700/0600 owned by the remoteUser's uid 1000", out)
+	}
+
+	// A push from devcrate ssh keeps them readable by the remoteUser.
+	second := randomToken()
+	e.forward(second)
+	if r := e.Devcrate("ssh", "--", "true"); r.Code != 0 {
+		t.Fatalf("ssh exit %d", r.Code)
+	}
+	if got := asDev(); got != second+"|file "+second {
+		t.Errorf("after rotating, remoteUser's login shell sees %q, want %q", got, second+"|file "+second)
+	}
+}
+
 func TestDockerfileReceivesBuildSecret(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)

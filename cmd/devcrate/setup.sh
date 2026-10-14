@@ -134,7 +134,10 @@ else
 	done < "$creds/names"
 	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" "$@" < /dev/null
 
-	# The same sourcing and $HOME symlinks as on the VM, for the container user.
+	# The same sourcing and $HOME symlinks as on the VM, for the container
+	# user, who owns the creds (devcrate's later pushes keep that owner).
+	devcontainer exec --workspace-folder "$workspace" sh -c 'echo "$(id -u):$(id -g)"' < /dev/null > /run/devcrate/creds-owner
+	chown -R "$(cat /run/devcrate/creds-owner)" /run/devcrate/.creds
 	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
 	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh"
 	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null
