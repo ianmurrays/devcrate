@@ -70,6 +70,17 @@ Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config
 2. Run **Remote-SSH: Connect to Host…** and pick `devcrate-<name>`.
 3. In that window, run **Dev Containers: Attach to Running Container…** and pick the Environment's devcontainer.
 
+## Keep-alive
+
+An Environment stops itself once it has been Idle (no SSH connection, no setup running, no Keep-alive) for `idle_timeout`. To leave work running with nobody connected, hold it with a Keep-alive:
+
+```sh
+devcrate keep-alive [name] 2h        # from the laptop, over SSH
+devcrate-agent keep-alive 2h         # on the VM, e.g. from a script
+```
+
+The duration is Go-style (`90s`, `30m`, `2h30m`). The hold ends on its own: the Environment then stops after a further `idle_timeout` with nobody connected. Each call replaces the previous hold, so a shorter one cuts it short. The hold lives in tmpfs (`/run/devcrate/keep-alive`), so a reboot or Stop drops it. `devcrate keep-alive` never starts a stopped Environment and fails like `devcrate ssh` does.
+
 ## Build
 
 Requires Go 1.25.
