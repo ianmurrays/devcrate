@@ -70,6 +70,20 @@ Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config
 2. Run **Remote-SSH: Connect to Host…** and pick `devcrate-<name>`.
 3. In that window, run **Dev Containers: Attach to Running Container…** and pick the Environment's devcontainer.
 
+## Rebuilding the devcontainer
+
+`up` keeps the existing devcontainer, so a resume is a `docker start` and `postCreateCommand` runs only once. It recreates the container (a Rebuild) when the devcontainer config on the VM changes. Edit it in the Environment's clone (`/var/lib/devcrate/workspace`): setup never pulls, so a change pushed from your laptop needs a `git pull` there first.
+
+devcrate hashes these inputs and stores the hash at `/var/lib/devcrate/devcontainer.hash`; when it changes, `up` passes `--remove-existing-container` to `devcontainer up`:
+
+- the `devcontainer.json` fields used to build the image or create the container: `image`, `build`, `dockerFile`, `context`, `features` (the Feature references and their options), `overrideFeatureInstallOrder`, `dockerComposeFile`, `service`, `runServices`, `workspaceMount`, `workspaceFolder`, `mounts`, `runArgs`, `appPort`, `containerEnv`, `containerUser`, `remoteUser`, `updateRemoteUserUID`, `init`, `privileged`, `capAdd` and `securityOpt`;
+- the Dockerfile;
+- the VM's CPU architecture.
+
+The hash does not cover other files in the build context (files a Dockerfile `COPY`s, a Compose file's contents), the digest the `FROM` tag points to, secret values, or any other `devcontainer.json` field: editing `forwardPorts`, `customizations`, `remoteEnv` or a lifecycle command such as `postCreateCommand` does not rebuild. For those, run `devcrate up --rebuild`, which recreates the container even with no config change.
+
+A Rebuild builds on the cached image layers, so only the changed steps rerun. It discards the old container: `postCreateCommand` runs again and the container's home starts fresh. The workspace is on the VM and survives.
+
 ## Keep-alive
 
 An Environment stops itself once it has been Idle (no SSH connection, no setup running, no Keep-alive) for `idle_timeout`. To leave work running with nobody connected, hold it with a Keep-alive:
