@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -165,8 +166,17 @@ func up(flags map[string]string, args []string) error {
 		return err
 	}
 
+	// setup.sh runs the user's script from here.
+	push := "rm -f /run/devcrate/user-setup.sh"
+	if env.userScript != nil {
+		push = "mkdir -p /run/devcrate && cat > /run/devcrate/user-setup.sh"
+	}
+	if err := remote.Run(client, push, bytes.NewReader(env.userScript), os.Stdout, os.Stderr); err != nil {
+		return fmt.Errorf("pushing ~/.config/devcrate/setup.sh: %w", err)
+	}
+
 	fmt.Println("running setup…")
-	cmd := fmt.Sprintf("sh -s -- %s %t", shellQuote(env.origin), env.devcontainer)
+	cmd := fmt.Sprintf("sh -s -- %s %t %s %t", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer)
 	if err := remote.Run(client, cmd, strings.NewReader(setupScript), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
@@ -318,6 +328,12 @@ type environment struct {
 	searched []string // Providers asked when resolving a bare name
 	// devcontainer is false when the Environment is VM-only by choice.
 	devcontainer bool
+	// setupScript is the repo's setup_script; userScript is the user's
+	// ~/.config/devcrate/setup.sh, nil when there is none.
+	setupScript string
+	userScript  []byte
+	// userScriptInContainer is the user config's setup_script_in_container.
+	userScriptInContainer bool
 }
 
 // fromRepo is the Environment of the repo at the git URL, if given, else of
@@ -355,7 +371,18 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 			devcontainer = *v
 		}
 	}
-	return &environment{Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer}, nil
+	if _, ok := ctx.Options["setup_script_in_container"]; ok {
+		fmt.Fprintln(os.Stderr, "devcrate: ignoring setup_script_in_container in .devcrate.toml: it is only read from ~/.config/devcrate/config.toml")
+		delete(ctx.Options, "setup_script_in_container")
+	}
+	userScript, err := os.ReadFile(filepath.Join(cfg.dir, "setup.sh"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return &environment{
+		Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
+		setupScript: ctx.SetupScript, userScript: userScript, userScriptInContainer: cfg.SetupScriptInContainer,
+	}, nil
 }
 
 // resolve finds the Environment for `[name]`. Without a name, it is the
@@ -452,6 +479,9 @@ type config struct {
 	dir          string                    // ~/.config/devcrate
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
+	// SetupScriptInContainer runs ~/.config/devcrate/setup.sh in the
+	// devcontainer instead of on the VM.
+	SetupScriptInContainer bool `toml:"setup_script_in_container"`
 }
 
 func loadConfig() (*config, error) {

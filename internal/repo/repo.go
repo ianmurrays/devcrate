@@ -23,6 +23,9 @@ type Context struct {
 	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
 	// Devcontainer is `devcontainer` from .devcrate.toml, nil when unset.
 	Devcontainer *bool
+	// SetupScript is `setup_script` from .devcrate.toml: a path in the repo,
+	// run on the VM after the clone. Empty when unset.
+	SetupScript string
 }
 
 // ErrNotRepo is Load's error when dir is not inside a git repo.
@@ -87,6 +90,12 @@ func parse(origin, devcrateToml string) (*Context, error) {
 		}
 		c.Devcontainer = &b
 		delete(c.Options, "devcontainer")
+	}
+	if v, ok := c.Options["setup_script"]; ok {
+		if c.SetupScript, ok = v.(string); !ok {
+			return nil, errors.New(".devcrate.toml: setup_script must be a path in the repo")
+		}
+		delete(c.Options, "setup_script")
 	}
 	if name, ok := c.Options["name"]; ok {
 		c.Name = fmt.Sprint(name)
