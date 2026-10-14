@@ -21,12 +21,12 @@ import (
 
 // sshCmd replaces devcrate with the system ssh, logged in to the VM as root,
 // running `-- <cmd>` if given. It never starts the Environment.
-func sshCmd(_ map[string]bool, args []string) error {
+func sshCmd(flags map[string]string, args []string) error {
 	var command []string
 	if i := slices.Index(args, "--"); i >= 0 {
 		args, command = args[:i], args[i+1:]
 	}
-	env, err := resolve(args)
+	env, err := resolve(flags["--provider"], args)
 	if err != nil {
 		return err
 	}

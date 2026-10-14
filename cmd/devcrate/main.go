@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,7 +32,7 @@ var (
 	userData string
 )
 
-const usage = "usage: devcrate up | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [name] [-- <cmd>]"
+const usage = "usage: devcrate up [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [name] [-- <cmd>]  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -47,19 +48,20 @@ func run(args []string) error {
 	if len(args) == 0 {
 		return errors.New(usage)
 	}
-	var cmd func(flags map[string]bool, args []string) error
-	var allowed []string
+	var cmd func(flags map[string]string, args []string) error
+	// Every command takes --provider <name>; a trailing = marks a value flag.
+	allowed := []string{"--provider="}
 	switch args[0] {
 	case "up":
 		cmd = up
 	case "stop":
 		cmd = stop
 	case "delete":
-		cmd, allowed = del, []string{"--yes"}
+		cmd, allowed = del, append(allowed, "--yes")
 	case "status":
-		cmd, allowed = status, []string{"--json"}
+		cmd, allowed = status, append(allowed, "--json")
 	case "list":
-		cmd, allowed = list, []string{"--json"}
+		cmd, allowed = list, append(allowed, "--json")
 	case "ssh":
 		cmd = sshCmd
 	default:
@@ -80,35 +82,45 @@ func run(args []string) error {
 	return cmd(flags, append(rest, tail...))
 }
 
-// parseFlags splits the allowed boolean flags from positional arguments.
-func parseFlags(args, allowed []string) (map[string]bool, []string, error) {
-	flags := map[string]bool{}
+// parseFlags splits the allowed flags from positional arguments. A boolean
+// flag's value is "true"; a value flag (listed as "--name=") takes the next
+// argument or --name=value.
+func parseFlags(args, allowed []string) (map[string]string, []string, error) {
+	flags := map[string]string{}
 	var rest []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if !strings.HasPrefix(a, "-") {
 			rest = append(rest, a)
 			continue
 		}
-		ok := false
-		for _, f := range allowed {
-			ok = ok || a == f
-		}
-		if !ok {
+		name, value, hasValue := strings.Cut(a, "=")
+		switch {
+		case slices.Contains(allowed, name) && !hasValue:
+			flags[name] = "true"
+		case slices.Contains(allowed, name+"="):
+			if !hasValue {
+				if i++; i == len(args) {
+					return nil, nil, fmt.Errorf("flag %s needs a value\n%s", name, usage)
+				}
+				value = args[i]
+			}
+			flags[name] = value
+		default:
 			return nil, nil, fmt.Errorf("unknown flag %s\n%s", a, usage)
 		}
-		flags[a] = true
 	}
 	return flags, rest, nil
 }
 
-func up(_ map[string]bool, args []string) error {
-	if len(args) > 0 {
-		if !isGitURL(args[0]) {
-			return fmt.Errorf("%q is a bare Environment name: run devcrate up inside its repo, or pass a git URL", args[0])
-		}
-		return errors.New("devcrate up <git-url> is not supported yet")
+func up(flags map[string]string, args []string) error {
+	if len(args) > 1 {
+		return errors.New(usage)
 	}
-	env, err := fromRepo()
+	if len(args) == 1 && !isGitURL(args[0]) {
+		return fmt.Errorf("%q is a bare Environment name: run devcrate up inside its repo, or pass a git URL", args[0])
+	}
+	env, err := fromRepo(flags["--provider"], args...)
 	if err != nil {
 		return err
 	}
@@ -163,8 +175,8 @@ func up(_ map[string]bool, args []string) error {
 }
 
 // stop ends compute billing and keeps the volume. It never asks.
-func stop(_ map[string]bool, args []string) error {
-	env, err := resolve(args)
+func stop(flags map[string]string, args []string) error {
+	env, err := resolve(flags["--provider"], args)
 	if err != nil {
 		return err
 	}
@@ -185,15 +197,15 @@ func stop(_ map[string]bool, args []string) error {
 }
 
 // del removes the VM and the volume, after a y/N prompt unless --yes.
-func del(flags map[string]bool, args []string) error {
-	env, err := resolve(args)
+func del(flags map[string]string, args []string) error {
+	env, err := resolve(flags["--provider"], args)
 	if err != nil {
 		return err
 	}
 	if env.provider == nil {
 		return env.missing()
 	}
-	if !flags["--yes"] {
+	if flags["--yes"] == "" {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
 			return fmt.Errorf("refusing to delete %s without a terminal to confirm: pass --yes", env.Name)
 		}
@@ -220,8 +232,8 @@ func del(flags map[string]bool, args []string) error {
 }
 
 // status prints one state word and succeeds for every state.
-func status(flags map[string]bool, args []string) error {
-	env, err := resolve(args)
+func status(flags map[string]string, args []string) error {
+	env, err := resolve(flags["--provider"], args)
 	if err != nil {
 		return err
 	}
@@ -244,7 +256,7 @@ func status(flags map[string]bool, args []string) error {
 			}
 		}
 	}
-	if flags["--json"] {
+	if flags["--json"] != "" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]string{"name": env.Name, "state": state})
 	}
 	fmt.Println(state)
@@ -253,13 +265,15 @@ func status(flags map[string]bool, args []string) error {
 
 // list prints every Environment of every known Provider: the current repo's
 // and those configured under [providers.*] in the user config.
-func list(flags map[string]bool, _ []string) error {
+func list(flags map[string]string, _ []string) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	names := cfg.providerNames()
-	if ctx, err := repo.Load("."); err == nil {
+	if flags["--provider"] != "" {
+		names = []string{flags["--provider"]}
+	} else if ctx, err := repo.Load("."); err == nil {
 		if _, ok := cfg.Providers[ctx.Provider]; !ok {
 			names = append(names, ctx.Provider)
 		}
@@ -283,7 +297,7 @@ func list(flags map[string]bool, _ []string) error {
 			rows = append(rows, row{it.EnvironmentID, name, it.State})
 		}
 	}
-	if flags["--json"] {
+	if flags["--json"] != "" {
 		return json.NewEncoder(os.Stdout).Encode(rows)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -303,17 +317,28 @@ type environment struct {
 	searched []string // Providers asked when resolving a bare name
 }
 
-// fromRepo is the Environment of the repo in the current directory.
-func fromRepo() (*environment, error) {
-	ctx, err := repo.Load(".")
+// fromRepo is the Environment of the repo at the git URL, if given, else of
+// the repo in the current directory. providerName, if set, overrides the
+// repo's Provider.
+func fromRepo(providerName string, url ...string) (*environment, error) {
+	var ctx *repo.Context
+	var err error
+	if len(url) == 1 {
+		ctx, err = repo.FromURL(url[0])
+	} else {
+		ctx, err = repo.Load(".")
+	}
 	if err != nil {
 		return nil, err
+	}
+	if providerName == "" {
+		providerName = ctx.Provider
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
 	}
-	p, err := provider.Find(ctx.Provider, cfg.dir)
+	p, err := provider.Find(providerName, cfg.dir)
 	if err != nil {
 		return nil, err
 	}
@@ -321,25 +346,27 @@ func fromRepo() (*environment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &environment{Name: ctx.Name, origin: ctx.Origin, options: ctx.Options, provider: p, key: key}, nil
+	return &environment{Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key}, nil
 }
 
-// resolve finds the Environment for `[name]`. Inside a repo, the repo's
-// Provider is used and name defaults to the repo's. Outside one, name is
-// required and the first Provider under [providers.*] that knows it wins;
-// provider is nil when none does.
-func resolve(args []string) (*environment, error) {
+// resolve finds the Environment for `[name]`. Without a name, it is the
+// current repo's. A bare name is looked up in every Provider under
+// [providers.*] (and the current repo's), and must be reported by at most
+// one; provider is nil when none reports it. providerName, if set, is used
+// without asking.
+func resolve(providerName string, args []string) (*environment, error) {
 	if len(args) > 1 {
 		return nil, errors.New(usage)
 	}
-	env, err := fromRepo()
-	if err == nil {
-		if len(args) == 1 {
-			env.Name = args[0]
-		}
-		return env, nil
-	}
+	env, repoErr := fromRepo(providerName)
 	if len(args) == 0 {
+		if errors.Is(repoErr, repo.ErrNotRepo) {
+			return nil, errors.New("outside a repo, pass an Environment name")
+		}
+		return env, repoErr
+	}
+	name := args[0]
+	if err := repo.CheckName(name); err != nil {
 		return nil, err
 	}
 	cfg, err := loadConfig()
@@ -350,26 +377,52 @@ func resolve(args []string) (*environment, error) {
 	if err != nil {
 		return nil, err
 	}
-	env = &environment{Name: args[0], key: key, searched: cfg.providerNames()}
-	if len(env.searched) == 0 {
+
+	// Each candidate Provider with the options it gets.
+	candidates := map[string]map[string]any{}
+	for p, opts := range cfg.Providers {
+		candidates[p] = opts
+	}
+	if repoErr == nil {
+		candidates[env.provider.Name] = env.options
+	}
+	if providerName != "" {
+		candidates = map[string]map[string]any{providerName: candidates[providerName]}
+	}
+	searched := slices.Sorted(maps.Keys(candidates))
+	if len(searched) == 0 {
 		return nil, fmt.Errorf("outside a repo, devcrate needs Providers configured as [providers.<name>] in %s", filepath.Join(cfg.dir, "config.toml"))
 	}
-	for _, name := range env.searched {
-		p, err := provider.Find(name, cfg.dir)
+
+	var found []*environment
+	for _, p := range searched {
+		prov, err := provider.Find(p, cfg.dir)
 		if err != nil {
 			return nil, err
 		}
-		env.provider, env.options = p, cfg.Providers[name]
-		res, err := p.Status(env.request())
+		e := &environment{Name: name, options: candidates[p], provider: prov, key: key, searched: searched}
+		if providerName != "" {
+			return e, nil
+		}
+		res, err := prov.Status(e.request())
 		if err != nil {
 			return nil, err
 		}
 		if res.State != "not_found" {
-			return env, nil
+			found = append(found, e)
 		}
 	}
-	env.provider, env.options = nil, nil
-	return env, nil
+	switch len(found) {
+	case 0:
+		return &environment{Name: name, key: key, searched: searched}, nil
+	case 1:
+		return found[0], nil
+	}
+	var names []string
+	for _, e := range found {
+		names = append(names, e.provider.Name)
+	}
+	return nil, fmt.Errorf("more than one Provider has an Environment named %s (%s): pass --provider <name> to pick one", name, strings.Join(names, ", "))
 }
 
 func (e *environment) missing() error {
@@ -402,6 +455,19 @@ func loadConfig() (*config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// options is the user's [providers.<name>] table overlaid with repo, whose
+// values win.
+func (c *config) options(name string, repo map[string]any) map[string]any {
+	merged := map[string]any{}
+	for k, v := range c.Providers[name] {
+		merged[k] = v
+	}
+	for k, v := range repo {
+		merged[k] = v
+	}
+	return merged
 }
 
 func (c *config) providerNames() []string {

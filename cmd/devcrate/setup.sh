@@ -9,6 +9,9 @@ rm -f /run/devcrate/ready
 
 if [ ! -d "$workspace/.git" ]; then
 	git clone "$origin" "$workspace"
+elif [ "$(git -C "$workspace" remote get-url origin)" != "$origin" ]; then
+	echo "devcrate: this Environment holds a clone of $(git -C "$workspace" remote get-url origin), not $origin: set name in .devcrate.toml to give this repo its own Environment" >&2
+	exit 1
 fi
 
 mkdir -p /run/devcrate

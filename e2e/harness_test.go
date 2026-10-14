@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cgi"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ var (
 	binDir     string // devcrate and devcrate-provider-fake
 	gitRoot    string // bare fixture repos, served over dumb HTTP
 	gitBaseURL string // as seen from inside the VM
+	gitPort    int
 	vmImage    string
 )
 
@@ -57,11 +59,23 @@ func run(m *testing.M) int {
 	}
 
 	// Docker Desktop and OrbStack both route host.docker.internal to the
-	// laptop's loopback, so the VM can clone from this server.
+	// laptop's loopback, so the VM can clone from this server. It speaks smart
+	// HTTP, which shallow and filtered clones (`up <git-url>`) need.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	must(err)
-	go http.Serve(ln, http.FileServer(http.Dir(gitRoot)))
-	gitBaseURL = fmt.Sprintf("http://host.docker.internal:%d", ln.Addr().(*net.TCPAddr).Port)
+	gitPath, err := exec.LookPath("git")
+	must(err)
+	go http.Serve(ln, &cgi.Handler{
+		Path: gitPath,
+		Args: []string{"http-backend"},
+		Env: []string{
+			"GIT_PROJECT_ROOT=" + gitRoot,
+			"GIT_HTTP_EXPORT_ALL=1",
+			"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=uploadpack.allowFilter", "GIT_CONFIG_VALUE_0=true",
+		},
+	})
+	gitPort = ln.Addr().(*net.TCPAddr).Port
+	gitBaseURL = fmt.Sprintf("http://host.docker.internal:%d", gitPort)
 
 	return m.Run()
 }
@@ -85,6 +99,11 @@ func NewEnv(t *testing.T) *Env {
 	e.Dir = filepath.Join(t.TempDir(), e.Name)
 	must(os.MkdirAll(e.Dir, 0o755))
 	t.Cleanup(e.destroy)
+
+	// The laptop can't resolve host.docker.internal; its git (as devcrate
+	// runs it, with this HOME) reaches the same server on loopback.
+	gitconfig := fmt.Sprintf("[url \"http://127.0.0.1:%d/\"]\n\tinsteadOf = %s/\n", gitPort, gitBaseURL)
+	must(os.WriteFile(filepath.Join(e.Home, ".gitconfig"), []byte(gitconfig), 0o644))
 
 	e.WriteFile(".devcrate.toml", "provider = \"fake\"\n")
 	e.WriteFile("README.md", "fixture "+e.Name+"\n")
@@ -110,6 +129,26 @@ func (e *Env) WriteFile(rel, content string) {
 	if err := os.WriteFile(filepath.Join(e.Dir, rel), []byte(content), 0o644); err != nil {
 		e.t.Fatal(err)
 	}
+}
+
+// UserConfig writes the isolated HOME's ~/.config/devcrate/config.toml.
+func (e *Env) UserConfig(content string) {
+	e.t.Helper()
+	dir := filepath.Join(e.Home, ".config", "devcrate")
+	must(os.MkdirAll(dir, 0o755))
+	must(os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o644))
+}
+
+// InstallProvider copies the fake Provider into the isolated HOME's
+// ~/.config/devcrate/providers/ as devcrate-provider-<name>. It sees the same
+// fake VMs as `fake`.
+func (e *Env) InstallProvider(name string) {
+	e.t.Helper()
+	bin, err := os.ReadFile(filepath.Join(binDir, "devcrate-provider-fake"))
+	must(err)
+	dir := filepath.Join(e.Home, ".config", "devcrate", "providers")
+	must(os.MkdirAll(dir, 0o755))
+	must(os.WriteFile(filepath.Join(dir, "devcrate-provider-"+name), bin, 0o755))
 }
 
 // Result is a finished devcrate command.

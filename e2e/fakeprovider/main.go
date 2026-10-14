@@ -113,22 +113,32 @@ func up(req request) result {
 
 func status(env string) result {
 	c := name(env)
+	if s := state(env); s != "running" {
+		return result{State: s}
+	}
+	hostPort := strings.TrimSpace(docker(nil, "port", c, "22/tcp"))
+	hostPort = strings.SplitN(hostPort, "\n", 2)[0]
+	port, err := strconv.Atoi(hostPort[strings.LastIndex(hostPort, ":")+1:])
+	if err != nil {
+		fail("parsing published port %q: %v", hostPort, err)
+	}
+	return result{State: "running", Host: "127.0.0.1", User: "root", Port: port}
+}
+
+// state is the Environment's state word. Unlike status it reads no port, so
+// list doesn't fail on another test's VM that is being removed.
+func state(env string) string {
+	c := name(env)
 	switch containerState(c) {
 	case "":
 		if volumeExists(c) {
-			return result{State: "stopped"}
+			return "stopped"
 		}
-		return result{State: "not_found"}
+		return "not_found"
 	case "running":
-		hostPort := strings.TrimSpace(docker(nil, "port", c, "22/tcp"))
-		hostPort = strings.SplitN(hostPort, "\n", 2)[0]
-		port, err := strconv.Atoi(hostPort[strings.LastIndex(hostPort, ":")+1:])
-		if err != nil {
-			fail("parsing published port %q: %v", hostPort, err)
-		}
-		return result{State: "running", Host: "127.0.0.1", User: "root", Port: port}
+		return "running"
 	default:
-		return result{State: "stopped"}
+		return "stopped"
 	}
 }
 
@@ -142,7 +152,7 @@ func list() []listItem {
 	// Every Environment has a volume; a stopped one has nothing else.
 	out := docker(nil, "volume", "ls", "--filter", "label=devcrate.fake=1", "--format", `{{.Label "devcrate.environment"}}`)
 	for _, env := range strings.Fields(out) {
-		items = append(items, listItem{env, status(env).State})
+		items = append(items, listItem{env, state(env)})
 	}
 	return items
 }
