@@ -157,6 +157,13 @@ func forward(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
+	// forward runs until interrupted: it holds the lock only while it sets
+	// up, so stop and other commands still work while it forwards.
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	res, err := env.running()
 	if err != nil {
 		return err
@@ -210,6 +217,7 @@ devcontainer read-configuration --workspace-folder . < /dev/null`
 		go detectPorts(client, attrs, explicit)
 	}
 
+	unlock()
 	go keepalive(client)
 	err = client.Wait()
 	if err == nil {

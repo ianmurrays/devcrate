@@ -31,6 +31,13 @@ func sshCmd(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The lock covers the credential push and the container lookup, not the
+	// session, so stop and other commands still work while connected.
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock() // on failure; the session itself runs unlocked
 	res, err := env.running()
 	if err != nil {
 		return err
@@ -79,6 +86,7 @@ func sshCmd(flags map[string]string, args []string) error {
 		"-i", filepath.Join(dir, "id_ed25519"), "-o", "IdentitiesOnly=yes",
 		"-o", "HostKeyAlias="+env.alias(), "-o", "UserKnownHostsFile="+filepath.Join(dir, "known_hosts"),
 		"-p", strconv.Itoa(res.Port), "-l", res.User, "--", res.Host)
+	unlock()
 	return syscall.Exec(bin, append(argv, command...), os.Environ())
 }
 
@@ -121,6 +129,11 @@ func keepAlive(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	res, err := env.running()
 	if err != nil {
 		return err
