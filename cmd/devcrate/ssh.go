@@ -102,11 +102,11 @@ func (e *environment) running() (provider.Result, error) {
 		return res, err
 	}
 	switch res.State {
-	case "running":
+	case provider.Running:
 		return res, nil
-	case "stopped":
+	case provider.Stopped:
 		return res, fmt.Errorf("%s is stopped; run devcrate up in its repo", e.Name)
-	case "not_found":
+	case provider.NotFound:
 		return res, fmt.Errorf("no Environment named %s", e.Name)
 	default:
 		return res, fmt.Errorf("%s is %s; try again shortly", e.Name, res.State)

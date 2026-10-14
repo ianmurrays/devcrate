@@ -150,7 +150,7 @@ func up(flags map[string]string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if res.State != "busy" {
+		if res.State != provider.Busy {
 			break
 		}
 		if !waited {
@@ -175,7 +175,7 @@ func up(flags map[string]string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if res.State != "running" {
+	if res.State != provider.Running {
 		return fmt.Errorf("provider %s up returned state %q, want running", env.provider.Name, res.State)
 	}
 	if env.idleTimeout != 0 && len(res.SelfStopEnv) == 0 {
@@ -294,11 +294,11 @@ func status(flags map[string]string, args []string) error {
 		if err != nil {
 			return err
 		}
-		state = res.State
-		switch state {
-		case "not_found":
+		state = string(res.State)
+		switch res.State {
+		case provider.NotFound:
 			state = "missing"
-		case "running":
+		case provider.Running:
 			if client, err := env.dial(res, 0); err == nil {
 				if remote.Run(client, "test -f /run/devcrate/ready", nil, nil, nil) == nil {
 					state = "ready"
@@ -349,7 +349,7 @@ func list(flags map[string]string, _ []string) error {
 			return err
 		}
 		for _, it := range items {
-			rows = append(rows, row{it.EnvironmentID, name, it.State})
+			rows = append(rows, row{it.EnvironmentID, name, string(it.State)})
 		}
 	}
 	if flags["--json"] != "" {
@@ -505,7 +505,7 @@ func resolve(providerName string, args []string) (*environment, error) {
 		if err != nil {
 			return nil, err
 		}
-		if res.State != "not_found" {
+		if res.State != provider.NotFound {
 			found = append(found, e)
 		}
 	}

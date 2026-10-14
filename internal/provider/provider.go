@@ -21,9 +21,19 @@ type Request struct {
 	UserData      string         `json:"user_data"`
 }
 
+// State is an Environment's state as a Provider reports it.
+type State string
+
+const (
+	Running  State = "running"
+	Busy     State = "busy" // mid-transition, such as a Self-stop
+	Stopped  State = "stopped"
+	NotFound State = "not_found"
+)
+
 // Result is what `up` and `status` print on stdout.
 type Result struct {
-	State string `json:"state"` // running | busy | stopped | not_found
+	State State `json:"state"`
 	Host  string `json:"host"`
 	User  string `json:"user"`
 	Port  int    `json:"port"`
@@ -96,7 +106,7 @@ func (p *Provider) SelfStop(req Request) (string, error) {
 // Item is one entry of `list`.
 type Item struct {
 	EnvironmentID string `json:"environment_id"`
-	State         string `json:"state"`
+	State         State  `json:"state"`
 }
 
 // List returns every Environment this Provider knows about.
