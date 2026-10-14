@@ -27,6 +27,9 @@ type Result struct {
 	Host  string `json:"host"`
 	User  string `json:"user"`
 	Port  int    `json:"port"`
+	// SelfStopEnv (from `up` only) is the environment the self-stop script
+	// runs with on the VM: the Self-stop credential.
+	SelfStopEnv map[string]string `json:"self_stop_env,omitempty"`
 }
 
 // Provider is one discovered devcrate-provider-<name> executable.
@@ -36,17 +39,38 @@ type Provider struct {
 	Stderr io.Writer // where the Provider's stderr goes; os.Stderr by default
 }
 
-// Find looks for devcrate-provider-<name> on PATH, then in <configDir>/providers.
+// executableDir is the directory of the devcrate executable (symlinks
+// resolved), where the Providers that ship with devcrate live.
+var executableDir = func() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if exe, err = filepath.EvalSymlinks(exe); err != nil {
+		return "", err
+	}
+	return filepath.Dir(exe), nil
+}
+
+// Find looks for devcrate-provider-<name> on PATH, then in
+// <configDir>/providers, then next to the devcrate executable (the Providers
+// devcrate ships with).
 func Find(name, configDir string) (*Provider, error) {
 	exe := "devcrate-provider-" + name
 	if path, err := exec.LookPath(exe); err == nil {
 		return &Provider{Name: name, Path: path, Stderr: os.Stderr}, nil
 	}
-	path := filepath.Join(configDir, "providers", exe)
-	if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-		return &Provider{Name: name, Path: path, Stderr: os.Stderr}, nil
+	dirs := []string{filepath.Join(configDir, "providers")}
+	if dir, err := executableDir(); err == nil {
+		dirs = append(dirs, dir)
 	}
-	return nil, fmt.Errorf("provider %q not found: no %s on PATH or in %s", name, exe, filepath.Join(configDir, "providers"))
+	for _, dir := range dirs {
+		path := filepath.Join(dir, exe)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return &Provider{Name: name, Path: path, Stderr: os.Stderr}, nil
+		}
+	}
+	return nil, fmt.Errorf("provider %q not found: no %s on PATH, in %s or next to devcrate", name, exe, filepath.Join(configDir, "providers"))
 }
 
 func (p *Provider) Up(req Request) (Result, error)     { return p.result("up", req) }
@@ -57,6 +81,17 @@ func (p *Provider) Stop(req Request) error { return p.run("stop", req, nil) }
 
 // Delete removes everything the Environment owns. Its stdout is ignored.
 func (p *Provider) Delete(req Request) error { return p.run("delete", req, nil) }
+
+// SelfStop returns the Provider's self-stop script, which devcrate copies to
+// the VM for the Agent to run with self_stop_env sourced. The verb prints
+// {"script": "..."}.
+func (p *Provider) SelfStop(req Request) (string, error) {
+	var out struct {
+		Script string `json:"script"`
+	}
+	err := p.run("self-stop", req, &out)
+	return out.Script, err
+}
 
 // Item is one entry of `list`.
 type Item struct {

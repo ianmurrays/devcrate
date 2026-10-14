@@ -1,0 +1,201 @@
+#!/bin/sh
+# devcrate-provider-digitalocean: devcrate's DigitalOcean Provider. It speaks
+# the Provider contract (docs/adr/0001) and wraps doctl, which must already be
+# logged in, and jq. See README.md next to it.
+#
+# An Environment <name> is a droplet and a block volume, both named
+# devcrate-<name> and tagged devcrate:<name>. A stopped Environment is its
+# volume with no droplet.
+set -eu
+
+die() {
+	echo "digitalocean: $*" >&2
+	exit 1
+}
+
+command -v doctl >/dev/null 2>&1 || die "doctl is not installed (or not on PATH): install it and run doctl auth init, see https://docs.digitalocean.com/reference/doctl/how-to/install/"
+command -v jq >/dev/null 2>&1 || die "jq is not installed (or not on PATH): install it, see https://jqlang.org/download/"
+
+verb=${1:-}
+req=$(cat)
+
+# opt KEY DEFAULT prints the option KEY from the request, or DEFAULT.
+opt() {
+	printf '%s' "$req" | jq -r --arg k "$1" --arg d "$2" '.options[$k] // $d | tostring'
+}
+
+# Defaults (README.md, "Options"). image has none: a snapshot is required.
+region=$(opt region nyc3)
+size=$(opt size s-2vcpu-4gb)
+volume_size=$(opt volume_size 50)
+image=$(opt image "")
+token=$(opt token "")
+
+name=$(printf '%s' "$req" | jq -r '.environment_id // ""')
+
+# for_env NAME points the functions below at Environment NAME.
+for_env() {
+	res="devcrate-$1"
+	tag="devcrate:$1"
+}
+
+# droplets prints the Environment's droplets as a JSON array.
+droplets() {
+	out=$(doctl compute droplet list --tag-name "$tag" -o json)
+	printf '%s' "$out" | jq -c '. // []'
+}
+
+# volume_id prints the ID of the Environment's volume, or nothing.
+volume_id() {
+	out=$(doctl compute volume list -o json)
+	printf '%s' "$out" | jq -r --arg t "$tag" '[(. // [])[] | select((.tags // []) | index($t))][0].id // empty'
+}
+
+# status prints the contract's status object.
+status() {
+	d=$(droplets)
+	if [ "$(printf '%s' "$d" | jq length)" -gt 0 ]; then
+		printf '%s' "$d" | jq -c '.[0] |
+			if .status == "active" then
+				{state: "running", host: ([.networks.v4[]? | select(.type == "public") | .ip_address][0]), user: "root", port: 22}
+			elif .status == "off" then {state: "stopped"}
+			else {state: "busy"} end'
+	elif [ -n "$(volume_id)" ]; then
+		echo '{"state":"stopped"}'
+	else
+		echo '{"state":"not_found"}'
+	fi
+}
+
+# ssh_key_id prints the account ID of devcrate's public key, importing it the
+# first time.
+ssh_key_id() {
+	key=$(printf '%s' "$req" | jq -r '.ssh_public_key' | cut -d' ' -f1,2)
+	out=$(doctl compute ssh-key list -o json)
+	id=$(printf '%s' "$out" | jq -r --arg k "$key" '[(. // [])[] | select((.public_key | split(" ")[0:2] | join(" ")) == $k)][0].id // empty')
+	if [ -z "$id" ]; then
+		out=$(doctl compute ssh-key create devcrate --public-key "$key" -o json)
+		id=$(printf '%s' "$out" | jq -r '.[0].id')
+	fi
+	echo "$id"
+}
+
+# user_data mounts the volume at /var/lib/devcrate (formatting it on first
+# boot, with an fstab entry the Agent re-mounts with after a failed Self-stop),
+# then runs devcrate's user data.
+user_data() {
+	cat <<EOF
+#!/bin/sh
+# devcrate DigitalOcean Provider: mount the Environment's volume.
+set -eu
+dev=/dev/disk/by-id/scsi-0DO_Volume_$res
+i=0
+until [ -e "\$dev" ]; do
+	i=\$((i + 1))
+	if [ "\$i" -gt 120 ]; then
+		echo "devcrate: volume \$dev never appeared" >&2
+		exit 1
+	fi
+	sleep 1
+done
+blkid "\$dev" >/dev/null 2>&1 || mkfs.ext4 -q "\$dev"
+mkdir -p /var/lib/devcrate
+grep -q ' /var/lib/devcrate ' /etc/fstab || echo "\$dev /var/lib/devcrate ext4 defaults,nofail,discard,noatime 0 2" >> /etc/fstab
+mountpoint -q /var/lib/devcrate || mount /var/lib/devcrate
+
+EOF
+	printf '%s' "$req" | jq -r '.user_data'
+}
+
+up() {
+	vol=$(volume_id)
+	if [ -z "$vol" ]; then
+		out=$(doctl compute volume create "$res" --region "$region" --size "${volume_size}GiB" --tag "$tag" -o json)
+		vol=$(printf '%s' "$out" | jq -r '.[0].id')
+	fi
+	d=$(droplets)
+	if [ "$(printf '%s' "$d" | jq length)" -eq 0 ]; then
+		key=$(ssh_key_id)
+		ud=$(mktemp)
+		trap 'rm -f "$ud"' EXIT
+		user_data > "$ud"
+		# No image means no --image, so doctl itself says it is required.
+		set --
+		if [ -n "$image" ]; then
+			set -- --image "$image"
+		fi
+		doctl compute droplet create "$res" --region "$region" --size "$size" "$@" \
+			--volumes "$vol" --tag-name "$tag" --ssh-keys "$key" \
+			--user-data-file "$ud" --wait -o json >/dev/null
+	elif [ "$(printf '%s' "$d" | jq -r '.[0].status')" = off ]; then
+		doctl compute droplet-action power-on "$(printf '%s' "$d" | jq -r '.[0].id')" --wait -o json >/dev/null
+	fi
+	# A droplet another up is still creating: wait for it (up to 5 min).
+	i=0
+	while s=$(status) && [ "$(printf '%s' "$s" | jq -r .state)" = busy ] && [ "$i" -lt 60 ]; do
+		i=$((i + 1))
+		sleep 5
+	done
+	printf '%s' "$s" | jq -c --arg t "$token" 'if $t == "" then . else . + {self_stop_env: {DIGITALOCEAN_TOKEN: $t}} end'
+}
+
+# stop destroys the droplet; DigitalOcean detaches the volume, which stays.
+stop() {
+	for id in $(droplets | jq -r '.[].id'); do
+		doctl compute droplet delete "$id" --force >&2
+	done
+}
+
+delete() {
+	stop
+	vol=$(volume_id)
+	if [ -n "$vol" ]; then
+		# The volume detaches from the destroyed droplet asynchronously.
+		i=0
+		until doctl compute volume delete "$vol" --force >&2 2>/dev/null; do
+			i=$((i + 1))
+			if [ "$i" -ge 30 ]; then
+				doctl compute volume delete "$vol" --force >&2
+				break
+			fi
+			sleep 2
+		done
+	fi
+	if doctl compute tag get "$tag" -o json >/dev/null 2>&1; then
+		doctl compute tag delete "$tag" --force >&2
+	fi
+}
+
+# list: every Environment has a volume (a stopped one has nothing else).
+list() {
+	out=$(doctl compute volume list -o json)
+	for env in $(printf '%s' "$out" | jq -r '(. // [])[] | (.tags // [])[] | select(startswith("devcrate:")) | ltrimstr("devcrate:")' | sort -u); do
+		for_env "$env"
+		status | jq -c --arg e "$env" '{environment_id: $e, state: .state}'
+	done | jq -cs .
+}
+
+# self_stop prints the script the Agent runs on the VM, with self_stop_env
+# ($DIGITALOCEAN_TOKEN) sourced: destroy this droplet, never the volume.
+self_stop() {
+	jq -n --arg s '#!/bin/sh
+set -eu
+id=$(curl -sSf http://169.254.169.254/metadata/v1/id)
+exec curl -sSf -X DELETE -H "Authorization: Bearer $DIGITALOCEAN_TOKEN" "https://api.digitalocean.com/v2/droplets/$id"
+' '{script: $s}'
+}
+
+if [ "$verb" != list ] && [ -z "$name" ]; then
+	die "$verb: the request has no environment_id"
+fi
+for_env "$name"
+
+case $verb in
+up) up ;;
+status) status ;;
+stop) stop ;;
+delete) delete ;;
+list) list ;;
+self-stop) self_stop ;;
+*) die "unknown verb \"$verb\"" ;;
+esac

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -18,8 +17,6 @@ import (
 
 //go:embed creds.sh
 var credsScript string
-
-var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // pushCreds writes the current laptop values of the user config's forward_env
 // and forward_files to the VM's tmpfs, replacing what was there.

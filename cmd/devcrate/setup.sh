@@ -30,8 +30,23 @@ tee -a "$state/setup.log" < /run/devcrate/stdout &
 tee -a "$state/setup.log" < /run/devcrate/stderr >&2 &
 exec > /run/devcrate/stdout 2> /run/devcrate/stderr
 rm /run/devcrate/stdout /run/devcrate/stderr
-# Let the tees drain before the session ends; the exit status is kept.
-trap 'exec >&- 2>&-; wait' EXIT
+
+# The Agent never counts the Environment Idle while this lock is held, and
+# starts its idle clock when setup exits (the lock's mtime), however it exits.
+# Scripts setup runs get 9>&-, so what they leave running cannot hold it.
+exec 9>>/run/devcrate/setup.lock
+flock 9
+# Also let the tees drain before the session ends; the exit status is kept.
+trap 'touch /run/devcrate/setup.lock; exec >&- 2>&-; wait' EXIT
+
+# A sleeping laptop's session drops after about 3 minutes, so it stops
+# holding the Environment awake.
+sshd_conf=$(printf 'ClientAliveInterval 60\nClientAliveCountMax 3')
+if [ "$(cat /etc/ssh/sshd_config.d/devcrate.conf 2>/dev/null)" != "$sshd_conf" ]; then
+	mkdir -p /etc/ssh/sshd_config.d
+	echo "$sshd_conf" > /etc/ssh/sshd_config.d/devcrate.conf
+	systemctl reload ssh 2>/dev/null || systemctl reload sshd
+fi
 
 # at_least <version> <minimum>: dotted-version comparison.
 at_least() {
@@ -59,10 +74,22 @@ fi
 # Docker's and containerd's storage live on the volume (ADR 0004), so images
 # and the devcontainer survive a Stop. Restart them only when that changes.
 restart=
-daemon_json="{\"data-root\": \"$state/docker\"}"
-if [ "$(cat /etc/docker/daemon.json 2>/dev/null)" != "$daemon_json" ]; then
-	mkdir -p /etc/docker
-	echo "$daemon_json" > /etc/docker/daemon.json
+# Only data-root is set in daemon.json; its other settings are kept. sed, as
+# there may be no JSON tool on the VM.
+daemon_json=/etc/docker/daemon.json
+data_root="\"data-root\": \"$state/docker\""
+mkdir -p /etc/docker
+if grep -q '"data-root"' "$daemon_json" 2>/dev/null; then
+	sed "s|\"data-root\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|$data_root|" "$daemon_json"
+elif grep -q '[^{}[:space:]]' "$daemon_json" 2>/dev/null; then
+	sed "0,/{/s|{|{$data_root, |" "$daemon_json"
+else
+	echo "{$data_root}"
+fi > "$daemon_json.new"
+if cmp -s "$daemon_json.new" "$daemon_json"; then
+	rm "$daemon_json.new"
+else
+	mv "$daemon_json.new" "$daemon_json"
 	restart=1
 fi
 containerd_root="root = \"$state/containerd\""
@@ -106,7 +133,7 @@ creds=/run/devcrate/creds
 
 if [ -n "$setup_script" ]; then
 	echo "running $setup_script…"
-	(cd "$workspace" && if [ -x "./$setup_script" ]; then "./$setup_script"; else sh "./$setup_script"; fi) < /dev/null
+	(cd "$workspace" && if [ -x "./$setup_script" ]; then "./$setup_script"; else sh "./$setup_script"; fi) < /dev/null 9>&-
 fi
 
 if [ "$devcontainer" = false ]; then
@@ -132,15 +159,15 @@ else
 		eval "value=\$$name"
 		set -- "$@" --remote-env "$name=$value"
 	done < "$creds/names"
-	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" "$@" < /dev/null
+	devcontainer up --workspace-folder "$workspace" --mount "type=bind,source=$creds,target=$creds" "$@" < /dev/null 9>&-
 
 	# The same sourcing and $HOME symlinks as on the VM, for the container
 	# user, who owns the creds (devcrate's later pushes keep that owner).
-	devcontainer exec --workspace-folder "$workspace" sh -c 'echo "$(id -u):$(id -g)"' < /dev/null > /run/devcrate/creds-owner
+	devcontainer exec --workspace-folder "$workspace" sh -c 'echo "$(id -u):$(id -g)"' < /dev/null 9>&- > /run/devcrate/creds-owner
 	chown -R "$(cat /run/devcrate/creds-owner)" /run/devcrate/.creds
 	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
-	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh"
-	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null
+	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh" 9>&-
+	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null 9>&-
 fi
 
 # The scripts get /dev/null as stdin: setup's own stdin is the rest of this
@@ -151,10 +178,10 @@ if [ -f "$user_script" ]; then
 		echo "running ~/.config/devcrate/setup.sh in the devcontainer…"
 		# "$@" is the --remote-env list from devcontainer up (in_container is
 		# true only when that ran).
-		devcontainer exec --workspace-folder "$workspace" "$@" sh -s < "$user_script"
+		devcontainer exec --workspace-folder "$workspace" "$@" sh -s < "$user_script" 9>&-
 	else
 		echo "running ~/.config/devcrate/setup.sh…"
-		sh "$user_script" < /dev/null
+		sh "$user_script" < /dev/null 9>&-
 	fi
 fi
 
