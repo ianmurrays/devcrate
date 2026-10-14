@@ -142,7 +142,9 @@ func TestNonRootRemoteUserReadsForwardedCredentials(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
 	must(os.MkdirAll(filepath.Join(e.Dir, ".devcontainer"), 0o755))
-	e.WriteFile(".devcontainer/devcontainer.json", `{"build": {"dockerfile": "Dockerfile"}, "remoteUser": "dev"}`)
+	// The devcontainer CLI runs as root on the VM, so by default it rewrites
+	// the remoteUser's uid to 0; updateRemoteUserUID = false keeps it 1000.
+	e.WriteFile(".devcontainer/devcontainer.json", `{"build": {"dockerfile": "Dockerfile"}, "remoteUser": "dev", "updateRemoteUserUID": false}`)
 	e.WriteFile(".devcontainer/Dockerfile", "FROM alpine:3.20\nRUN adduser -D -u 1000 dev\n")
 	e.Push()
 	e.UserConfig(forwardConfig)
