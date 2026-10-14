@@ -11,7 +11,7 @@ import (
 
 // buildDockerfile has a layer whose output differs on every build, so a
 // reused cache layer shows up as an unchanged /built.
-const buildDockerfile = "FROM " + alpineImage + "\nRUN cat /proc/sys/kernel/random/uuid > /built\n"
+const buildDockerfile = "FROM alpine:3.20\nRUN cat /proc/sys/kernel/random/uuid > /built\n"
 
 // buildDevcontainerJSON builds buildDockerfile, with env as containerEnv.
 func buildDevcontainerJSON(env string) string {
@@ -140,7 +140,7 @@ func TestUpRebuildRecreatesTheDevcontainerOnTheLayerCache(t *testing.T) {
 
 	// A leftover container with the same label (say, from an interrupted
 	// Rebuild) does not hide the running one from ssh --container.
-	if out, code := e.VM("docker create --label devcontainer.local_folder=/var/lib/devcrate/workspace " + alpineImage); code != 0 {
+	if out, code := e.VM("docker create --label devcontainer.local_folder=/var/lib/devcrate/workspace alpine:3.20"); code != 0 {
 		t.Fatalf("creating a leftover devcontainer: %s", out)
 	}
 	if got := e.inContainer("cat /created"); got != "created\n" {

@@ -27,7 +27,7 @@ func TestVMOnlyEnvironmentGetsDockerOnTheVolume(t *testing.T) {
 	if r.Code != 0 || r.Stdout != "/var/lib/devcrate/docker\n/var/lib/devcrate/containerd\n" {
 		t.Errorf("storage roots = %q exit %d, want both under /var/lib/devcrate", r.Stdout, r.Code)
 	}
-	if r := e.Devcrate("ssh", "--", "docker run --rm "+alpineImage+" echo nested"); r.Code != 0 || r.Stdout != "nested\n" {
+	if r := e.Devcrate("ssh", "--", "docker run --rm alpine:3.20 echo nested"); r.Code != 0 || r.Stdout != "nested\n" {
 		t.Errorf("docker run on the VM = %q exit %d", r.Stdout, r.Code)
 	}
 	if out, _ := e.VM("docker ps -aq"); strings.TrimSpace(out) != "" {
@@ -39,13 +39,9 @@ func TestVMOnlyEnvironmentGetsDockerOnTheVolume(t *testing.T) {
 	}
 }
 
-// alpineImage is alpine from Google's Docker Hub mirror, which has no anonymous
-// pull limit (Hub allows 100 pulls an hour, which parallel e2e runs exhaust).
-const alpineImage = "mirror.gcr.io/library/alpine:3.20"
-
 // devcontainerJSON is an image-only devcontainer whose postCreateCommand
 // appends a line to /created in the container each time it runs.
-const devcontainerJSON = `{"image": "` + alpineImage + `", "postCreateCommand": "echo created >> /created"}`
+const devcontainerJSON = `{"image": "alpine:3.20", "postCreateCommand": "echo created >> /created"}`
 
 // devcontainer is the VM's devcontainer as "<id> <state>", or "".
 func (e *Env) devcontainer() string {
