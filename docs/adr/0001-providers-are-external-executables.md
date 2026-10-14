@@ -1,3 +1,5 @@
 # Providers are external executables with a JSON verb contract
 
 A Provider is an executable named `devcrate-provider-<name>` that devcrate runs once per verb (`up`, `stop`, `delete`, `status`, `list`, plus a `self-stop` script copied to the VM), passing one JSON object on stdin and reading JSON from stdout. We chose this over a Go interface compiled into devcrate so a new cloud is a script wrapping that cloud's existing CLI (reusing its auth), not a change to devcrate. Unlike DevPod, the contract has no transport verb and no tunnel: devcrate always reaches the VM over plain SSH, which keeps Providers to a few lines each.
+
+The credential the Agent needs for Self-stop comes back from the Provider, not from devcrate's knowledge of options: `up` may return a `self_stop_env` object, which devcrate writes over SSH to a root-only tmpfs file on every `up`, and which the `self-stop` script sources. This lets a Provider mint a credential scoped to the one instance it just created (Vultr: an IAM policy on `instance:<id>`), where a static option would have to reach every instance in the account (DigitalOcean's `droplet:delete`, which its Provider simply echoes back).
