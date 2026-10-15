@@ -1,0 +1,353 @@
+#!/bin/sh
+# devcrate-provider-vultr: devcrate's Vultr Provider. It speaks the Provider
+# contract (docs/adr/0001) by calling the Vultr API with curl and jq. See
+# README.md next to it.
+#
+# An Environment <name> is an instance named devcrate-<name> and tagged
+# devcrate:<name>, and an NVMe block volume labelled devcrate-<name> (volumes
+# have no tags). A stopped Environment is its volume with no instance.
+# Self-stop uses a service user and an IAM policy, both named devcrate-<name>.
+set -eu
+
+die() {
+	echo "vultr: $*" >&2
+	exit 1
+}
+
+command -v curl >/dev/null 2>&1 || die "curl is not installed (or not on PATH): install it"
+command -v jq >/dev/null 2>&1 || die "jq is not installed (or not on PATH): install it, see https://jqlang.org/download/"
+
+verb=${1:-}
+req=$(cat)
+
+# opt KEY DEFAULT prints the option KEY from the request, or DEFAULT.
+opt() {
+	printf '%s' "$req" | jq -r --arg k "$1" --arg d "$2" '.options[$k] // $d | tostring'
+}
+
+# Defaults (README.md, "Options"). region has none.
+region=$(opt region "")
+plan=$(opt plan vc2-2c-4gb)
+image=$(opt image "")
+volume_size=$(opt volume_size 50)
+
+name=$(printf '%s' "$req" | jq -r '.environment_id // ""')
+
+# The tests point these at a fake API and stop the waits from sleeping.
+api_url=${VULTR_API_URL:-https://api.vultr.com/v2}
+poll=${DEVCRATE_VULTR_POLL:-5}
+
+body=$(mktemp)
+trap 'rm -f "$body"' EXIT
+
+# api METHOD PATH [JSON] calls the API and prints the response body. On an
+# error status it fails with the API's own message.
+api() {
+	m=$1 p=$2 d=${3:-}
+	set -- -sS -o "$body" -w '%{http_code}' -X "$m" -H "Authorization: Bearer $key" -H "Content-Type: application/json"
+	if [ -n "$d" ]; then
+		set -- "$@" --data "$d"
+	fi
+	code=$(curl "$@" "$api_url$p") || die "$m $p: curl failed"
+	case $code in
+	2??) cat "$body" ;;
+	*)
+		msg=$(jq -r '.error // empty' "$body" 2>/dev/null) || msg=$(cat "$body")
+		die "$m $p: ${msg:-HTTP $code}"
+		;;
+	esac
+}
+
+# retry METHOD PATH [JSON] calls the API until it succeeds, up to 61 times
+# $poll seconds apart, then fails with the API's error.
+retry() {
+	n=0
+	until (api "$@") >/dev/null 2>&1; do
+		n=$((n + 1))
+		if [ "$n" -ge 60 ]; then
+			api "$@" >/dev/null
+			return
+		fi
+		sleep "$poll"
+	done
+}
+
+# for_env NAME points the functions below at Environment NAME.
+for_env() {
+	res="devcrate-$1"
+	tag="devcrate:$1"
+}
+
+# ponytail: one page of 500 per list; follow meta.links.next if an account
+# ever has more.
+
+# instances prints the Environment's instances as a JSON array.
+instances() {
+	out=$(api GET "/instances?per_page=500&tag=$tag")
+	printf '%s' "$out" | jq -c --arg t "$tag" '[.instances[] | select(.tags | index($t))]'
+}
+
+# volume prints the Environment's volume as JSON, or nothing.
+volume() {
+	out=$(api GET "/blocks?per_page=500")
+	printf '%s' "$out" | jq -c --arg l "$res" '[.blocks[] | select(.label == $l)][0] // empty'
+}
+
+# status prints the contract's status object.
+status() {
+	i=$(instances)
+	if [ "$(printf '%s' "$i" | jq length)" -gt 0 ]; then
+		printf '%s' "$i" | jq -c '.[0] |
+			if .status == "active" and .power_status == "running" and .main_ip != "0.0.0.0" then
+				{state: "running", host: .main_ip, user: "root", port: 22}
+			elif .status == "active" and .power_status == "stopped" then {state: "stopped"}
+			else {state: "busy"} end'
+		return
+	fi
+	v=$(volume)
+	if [ -n "$v" ]; then
+		echo '{"state":"stopped"}'
+	else
+		echo '{"state":"not_found"}'
+	fi
+}
+
+# check_region fails unless region is set and offers NVMe block storage.
+check_region() {
+	[ -n "$region" ] || die "region is required: set region under [providers.vultr] in ~/.config/devcrate/config.toml (see the Provider's README.md)"
+	out=$(api GET "/regions?per_page=500")
+	options=$(printf '%s' "$out" | jq -c --arg r "$region" '[.regions[] | select(.id == $r)][0].options // empty')
+	[ -n "$options" ] || die "unknown region \"$region\": see GET https://api.vultr.com/v2/regions"
+	printf '%s' "$options" | jq -e 'index("block_storage_high_perf")' >/dev/null ||
+		die "region \"$region\" has no NVMe block storage (high_perf), which the volume needs: pick another region"
+}
+
+# ssh_key_id prints the account ID of devcrate's public key, importing it the
+# first time.
+ssh_key_id() {
+	k=$(printf '%s' "$req" | jq -r '.ssh_public_key' | cut -d' ' -f1,2)
+	out=$(api GET "/ssh-keys?per_page=500")
+	id=$(printf '%s' "$out" | jq -r --arg k "$k" '[.ssh_keys[] | select((.ssh_key | split(" ")[0:2] | join(" ")) == $k)][0].id // empty')
+	if [ -z "$id" ]; then
+		out=$(api POST /ssh-keys "$(jq -nc --arg k "$k" '{name: "devcrate", ssh_key: $k}')")
+		id=$(printf '%s' "$out" | jq -r '.ssh_key.id')
+	fi
+	echo "$id"
+}
+
+# source_image prints the instance's image as JSON: the snapshot in image, or
+# the newest x64 Ubuntu LTS.
+source_image() {
+	if [ -n "$image" ]; then
+		jq -nc --arg s "$image" '{snapshot_id: $s}'
+		return
+	fi
+	out=$(api GET "/os?per_page=500")
+	src=$(printf '%s' "$out" | jq -c '[.os[] | select(.name | test("^Ubuntu [0-9]+\\.04 LTS x64$"))]
+		| max_by(.name | capture("(?<v>[0-9]+)").v | tonumber) // empty | {os_id: .id}')
+	[ -n "$src" ] || die "no Ubuntu LTS x64 image in GET /v2/os: set image to a snapshot ID"
+	echo "$src"
+}
+
+# user_data mounts the volume at /var/lib/devcrate (formatting it on first
+# boot, with an fstab entry the Agent re-mounts with after a failed Self-stop),
+# then runs devcrate's user data. up attaches the volume only once the
+# instance is active, so it waits for the disk.
+user_data() {
+	cat <<'EOF'
+#!/bin/sh
+# devcrate Vultr Provider: mount the Environment's volume.
+set -eu
+dev=/dev/vdb
+i=0
+until [ -b "$dev" ]; do
+	i=$((i + 1))
+	if [ "$i" -gt 600 ]; then
+		echo "devcrate: volume $dev never appeared" >&2
+		exit 1
+	fi
+	sleep 1
+done
+blkid "$dev" >/dev/null 2>&1 || mkfs.ext4 -q -L devcrate "$dev"
+mkdir -p /var/lib/devcrate
+grep -q ' /var/lib/devcrate ' /etc/fstab || echo "LABEL=devcrate /var/lib/devcrate ext4 defaults,nofail,discard,noatime 0 2" >> /etc/fstab
+mountpoint -q /var/lib/devcrate || mount /var/lib/devcrate
+
+EOF
+	printf '%s' "$req" | jq -r '.user_data'
+}
+
+up() {
+	check_region
+	v=$(volume)
+	if [ -z "$v" ]; then
+		out=$(api POST /blocks "$(jq -nc --arg r "$region" --arg l "$res" --argjson s "$volume_size" \
+			'{region: $r, size_gb: $s, label: $l, block_type: "high_perf"}')")
+		v=$(printf '%s' "$out" | jq -c .block)
+	fi
+	vregion=$(printf '%s' "$v" | jq -r .region)
+	[ "$vregion" = "$region" ] || die "the volume $res is in $vregion, not $region: set region = \"$vregion\""
+	vol=$(printf '%s' "$v" | jq -r .id)
+
+	i=$(instances)
+	if [ "$(printf '%s' "$i" | jq length)" -eq 0 ]; then
+		key_id=$(ssh_key_id)
+		src=$(source_image)
+		ud=$(user_data | base64 | tr -d '\n')
+		api POST /instances "$(jq -nc --arg r "$region" --arg p "$plan" --arg l "$res" --arg t "$tag" \
+			--arg k "$key_id" --arg u "$ud" --argjson src "$src" \
+			'{region: $r, plan: $p, label: $l, hostname: $l, tags: [$t], sshkey_id: [$k], user_data: $u} + $src')" >/dev/null
+	elif [ "$(printf '%s' "$i" | jq -r '.[0].power_status')" = stopped ]; then
+		api POST "/instances/$(printf '%s' "$i" | jq -r '.[0].id')/start" >/dev/null
+	fi
+
+	# Wait for the instance (a new one, or one another up is creating) to
+	# be active and running with an IP, for up to 120 polls (10 minutes).
+	n=0
+	while :; do
+		s=$(status)
+		[ "$(printf '%s' "$s" | jq -r .state)" = running ] && break
+		n=$((n + 1))
+		[ "$n" -lt 120 ] || die "$res is not running after 120 polls, $poll seconds apart: $s"
+		sleep "$poll"
+	done
+
+	# Attach the volume live. It may still be detaching from the instance a
+	# Stop destroyed.
+	i=$(instances)
+	id=$(printf '%s' "$i" | jq -r '.[0].id')
+	v=$(volume)
+	if [ "$(printf '%s' "$v" | jq -r .attached_to_instance)" != "$id" ]; then
+		retry POST "/blocks/$vol/attach" "$(jq -nc --arg i "$id" '{instance_id: $i, live: true}')"
+	fi
+	printf '%s' "$s" | jq -c --arg k "$(self_stop_key "$id" "$(printf '%s' "$s" | jq -r .host)")" \
+		'. + {self_stop_env: {VULTR_API_KEY: $k}}'
+}
+
+# user_id and policy_id print the ID of the Environment's service user and
+# IAM policy, or nothing.
+user_id() {
+	out=$(api GET "/users?per_page=500")
+	printf '%s' "$out" | jq -r --arg n "$res" '[.users[] | select(.name == $n and .service_user)][0].id // empty'
+}
+policy_id() {
+	out=$(api GET "/policies?per_page=500")
+	printf '%s' "$out" | jq -r --arg n "$res" '[.policies[] | select(.name == $n and (.is_system_policy | not))][0].id // empty'
+}
+
+# self_stop_key ID IP points the Environment's policy at instance ID and its
+# service user's allowlist at IP (creating both the first time), then prints
+# a new key for the user and revokes every other one. The key can only
+# delete that instance, only from that IP. It never expires: an expired key
+# would leave a long Keep-alive Environment unable to Self-stop.
+self_stop_key() {
+	doc=$(jq -nc --arg r "instance:$1" '{Version: "2012-10-17", Statement: [{Action: ["compute.instance.Delete"], Effect: "Allow", Resource: [$r]}]}')
+	uid=$(user_id)
+	if [ -z "$uid" ]; then
+		# Vultr requires an email and a password, neither of which is ever
+		# used. Dc1! covers any upper, lower, digit and symbol rule.
+		pw="Dc1!$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+		out=$(api POST /users "$(jq -nc --arg n "$res" --arg e "$res-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')@example.com" --arg p "$pw" \
+			'{name: $n, email: $e, password: $p, service_user: true, api_enabled: true}')")
+		uid=$(printf '%s' "$out" | jq -r .user.id)
+	fi
+	pid=$(policy_id)
+	if [ -z "$pid" ]; then
+		out=$(api POST /policies "$(jq -nc --arg n "$res" --argjson d "$doc" \
+			'{name: $n, description: "devcrate Self-stop", policy_document: $d}')")
+		pid=$(printf '%s' "$out" | jq -r .id)
+	else
+		api PUT "/policies/$pid" "$(jq -nc --argjson d "$doc" '{policy_document: $d}')" >/dev/null
+	fi
+	out=$(api GET "/users/$uid/policies")
+	if ! printf '%s' "$out" | jq -e --arg p "$pid" '.policies.direct | any(.id == $p)' >/dev/null; then
+		api POST "/policies/$pid/users/$uid" >/dev/null
+	fi
+
+	# A service user's allowlist starts empty, which rejects every call.
+	out=$(api GET "/users/$uid/ip-whitelist")
+	for a in $(printf '%s' "$out" | jq -c --arg ip "$2" '.ip_whitelist[] | select(.subnet != $ip or .subnet_size != 32) | {subnet, subnet_size}'); do
+		api DELETE "/users/$uid/ip-whitelist" "$a" >/dev/null
+	done
+	api POST "/users/$uid/ip-whitelist" "$(jq -nc --arg ip "$2" '{subnet: $ip, subnet_size: 32}')" >/dev/null
+
+	new=$(api POST "/users/$uid/apikeys" "$(jq -nc --arg n "$res" '{name: $n, expire: false}')")
+	# Revoke every other key: the previous up's, and the Default one Vultr
+	# creates with the user.
+	out=$(api GET "/users/$uid/apikeys")
+	for old in $(printf '%s' "$out" | jq -r --arg k "$(printf '%s' "$new" | jq -r .api_key.id)" '.api_keys[] | select(.id != $k) | .id'); do
+		api DELETE "/users/$uid/apikeys/$old" >/dev/null
+	done
+	printf '%s' "$new" | jq -r .api_key.api_key
+}
+
+# stop destroys the instance; Vultr detaches the volume, which stays.
+stop() {
+	i=$(instances)
+	for id in $(printf '%s' "$i" | jq -r '.[].id'); do
+		api DELETE "/instances/$id" >/dev/null
+	done
+}
+
+delete() {
+	stop
+	v=$(volume)
+	if [ -n "$v" ]; then
+		# The volume detaches from the destroyed instance asynchronously.
+		retry DELETE "/blocks/$(printf '%s' "$v" | jq -r .id)"
+	fi
+	# The user's keys go with it.
+	uid=$(user_id)
+	if [ -n "$uid" ]; then
+		api DELETE "/users/$uid" >/dev/null
+	fi
+	pid=$(policy_id)
+	if [ -n "$pid" ]; then
+		api DELETE "/policies/$pid" >/dev/null
+	fi
+}
+
+# list: every Environment has a volume (a stopped one has nothing else).
+list() {
+	out=$(api GET "/blocks?per_page=500")
+	items='[]'
+	for env in $(printf '%s' "$out" | jq -r '.blocks[].label | select(startswith("devcrate-")) | ltrimstr("devcrate-")' | sort -u); do
+		for_env "$env"
+		s=$(status)
+		items=$(printf '%s' "$items" | jq -c --arg e "$env" --argjson s "$s" '. + [{environment_id: $e, state: $s.state}]')
+	done
+	echo "$items"
+}
+
+if [ "$verb" != list ] && [ -z "$name" ]; then
+	die "$verb: the request has no environment_id"
+fi
+for_env "$name"
+
+# self-stop prints the script the Agent runs on the instance, with
+# self_stop_env ($VULTR_API_KEY, which up mints) sourced: destroy this
+# instance, never the volume. It needs no API key on the laptop. -4 because
+# the key's allowlist holds the instance's IPv4 address.
+if [ "$verb" = self-stop ]; then
+	jq -n --arg s '#!/bin/sh
+set -eu
+id=$(curl -4 -sSf "${VULTR_METADATA_URL:-http://169.254.169.254}/v1/instance-v2-id")
+exec curl -4 -sSf -X DELETE -H "Authorization: Bearer $VULTR_API_KEY" "${VULTR_API_URL:-https://api.vultr.com/v2}/instances/$id"
+' '{script: $s}'
+	exit
+fi
+
+key=${VULTR_API_KEY:-}
+if [ -z "$key" ] && [ -f "$HOME/.vultr-cli.yaml" ]; then
+	key=$(sed -n "s/^api-key:[[:space:]]*[\"']\{0,1\}\([^\"'[:space:]]*\).*/\1/p" "$HOME/.vultr-cli.yaml" | head -n 1)
+fi
+[ -n "$key" ] || die "no API key: set VULTR_API_KEY, or api-key in ~/.vultr-cli.yaml (see the Provider's README.md)"
+
+case $verb in
+up) up ;;
+status) status ;;
+stop) stop ;;
+delete) delete ;;
+list) list ;;
+*) die "unknown verb \"$verb\"" ;;
+esac

@@ -1,0 +1,169 @@
+package main
+
+import (
+	"errors"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+func TestCountEstablishedCountsOnlyConnectionsToSSH(t *testing.T) {
+	// /proc/net/tcp: a listener on :22, two sessions to :22, an outgoing
+	// connection from an ephemeral port to a remote :22, and a TIME_WAIT on :22.
+	const tcp = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
+   1: 0200A8C0:0016 0100A8C0:C350 01 00000000:00000000 02:000AFC3E 00000000     0        0 2 4 0000000000000000 20 4 30 10 -1
+   2: 0200A8C0:0016 0100A8C0:C351 01 00000000:00000000 02:000AFC3E 00000000     0        0 3 4 0000000000000000 20 4 30 10 -1
+   3: 0200A8C0:C352 0300A8C0:0016 01 00000000:00000000 00:00000000 00000000     0        0 4 1 0000000000000000 20 4 30 10 -1
+   4: 0200A8C0:0016 0100A8C0:C353 06 00000000:00000000 03:00000F9A 00000000     0        0 0 3 0000000000000000
+`
+	if n := countEstablished(strings.NewReader(tcp), 22); n != 2 {
+		t.Errorf("countEstablished = %d, want 2", n)
+	}
+}
+
+func TestIdleClockStartsWhenSetupExits(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := idleClock{since: t0}
+	if d := c.observe(t0.Add(10*time.Second), true, time.Time{}); d != 0 {
+		t.Errorf("active: idle %s, want 0", d)
+	}
+	// Setup exited at +15 s, between polls.
+	if d := c.observe(t0.Add(20*time.Second), false, t0.Add(15*time.Second)); d != 5*time.Second {
+		t.Errorf("idle since setup exited = %s, want 5s", d)
+	}
+	if d := c.observe(t0.Add(80*time.Second), false, t0.Add(15*time.Second)); d != 65*time.Second {
+		t.Errorf("idle a minute later = %s, want 65s", d)
+	}
+}
+
+func TestIdleClockStartsWhenKeepAliveExpires(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := idleClock{since: t0}
+	until := t0.Add(time.Minute) // a Keep-alive held until +60 s
+	if d := c.observe(t0.Add(30*time.Second), false, until); d > 0 {
+		t.Errorf("during the Keep-alive: idle %s, want none", d)
+	}
+	if d := c.observe(t0.Add(70*time.Second), false, until); d != 10*time.Second {
+		t.Errorf("idle 10 s after the Keep-alive expired = %s, want 10s", d)
+	}
+}
+
+func TestKeepAliveDeadlineRoundTrips(t *testing.T) {
+	path := t.TempDir() + "/run/keep-alive"
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := keepAliveUntil(path); !got.IsZero() {
+		t.Errorf("no Keep-alive: deadline %s, want zero", got)
+	}
+	until, err := holdFor(path, now, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(2 * time.Hour); !until.Equal(want) || !keepAliveUntil(path).Equal(want) {
+		t.Errorf("deadline = %s, read back %s, want %s", until, keepAliveUntil(path), want)
+	}
+	if _, err := holdFor(path, now, 0); err == nil {
+		t.Error("a zero Keep-alive was accepted")
+	}
+}
+
+// agentAt listens on a unix socket in dir that answers each connection with
+// its name, and records it in sessions as sshd's ~/.ssh/rc would.
+func agentAt(t *testing.T, dir, sessions, name string, mtime time.Time) net.Listener {
+	t.Helper()
+	sock := filepath.Join(dir, name+".sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			io.WriteString(c, name)
+			c.Close()
+		}
+	}()
+	record(t, sessions, name, sock, mtime)
+	return ln
+}
+
+func record(t *testing.T, sessions, name, target string, mtime time.Time) {
+	t.Helper()
+	link := filepath.Join(sessions, name)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	tv := []unix.Timeval{unix.NsecToTimeval(mtime.UnixNano()), unix.NsecToTimeval(mtime.UnixNano())}
+	if err := unix.Lutimes(link, tv); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestForwardedAgentIsNewestLiveSession(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "agent") // unix socket paths are short
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sessions := filepath.Join(dir, "sessions")
+	os.Mkdir(sessions, 0o755)
+	t0 := time.Now().Add(-time.Hour)
+
+	if c, err := forwardedAgent(sessions); err == nil {
+		c.Close()
+		t.Fatal("nobody connected: got an agent, want none")
+	}
+
+	agentAt(t, dir, sessions, "old", t0)
+	agentAt(t, dir, sessions, "new", t0.Add(time.Minute))
+	// The newest session has disconnected: sshd removed its socket.
+	record(t, sessions, "gone", filepath.Join(dir, "gone.sock"), t0.Add(2*time.Minute))
+
+	c, err := forwardedAgent(sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(c)
+	c.Close()
+	if string(got) != "new" {
+		t.Errorf("relayed to %q, want the newest live session, new", got)
+	}
+	if _, err := os.Lstat(filepath.Join(sessions, "gone")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the dead session's record was kept: %v", err)
+	}
+}
+
+func TestNameserverIsTheFirstOne(t *testing.T) {
+	conf := "# Generated by Docker Engine.\nsearch example.com\nnameserver 127.0.0.11\nnameserver 8.8.8.8\noptions ndots:0\n"
+	if ns := nameserver(conf); ns != "127.0.0.11" {
+		t.Errorf("nameserver = %q, want 127.0.0.11", ns)
+	}
+	if ns := nameserver("search x\n"); ns != "" {
+		t.Errorf("nameserver of a file without one = %q, want empty", ns)
+	}
+}
+
+func TestPickDevcontainerPrefersTheRunningOne(t *testing.T) {
+	for ps, want := range map[string]string{
+		"":                          "",
+		"abc exited\ndef running\n": "def",
+		"def running\n":             "def",
+	} {
+		if id, err := pickDevcontainer(ps); id != want || err != nil {
+			t.Errorf("pickDevcontainer(%q) = %q, %v; want %q", ps, id, err, want)
+		}
+	}
+	if _, err := pickDevcontainer("abc exited\n"); err == nil || !strings.Contains(err.Error(), "exited") {
+		t.Errorf("only an exited devcontainer: err %v, want one naming its state", err)
+	}
+}
