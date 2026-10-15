@@ -66,6 +66,8 @@ There is no `token` option: the Provider uses your API key, and mints Self-stop'
 
 devcrate expects the instance to come up with Docker (29 or newer) and the devcontainer CLI (0.80.0 or newer, at `/opt/devcontainers`) installed. `up` installs either one if it is missing, so stock Ubuntu works, but on every resume of a fresh instance that costs a minute or more. Bake them into a snapshot instead. Do not bake in the Agent: `up` pushes the version matching your `devcrate`.
 
+Bake in the tools your user setup script installs on the VM, such as the [GitHub CLI](../../README.md#github-cli), the same way: the script then skips them on every resume.
+
 1. Create an Ubuntu LTS instance in the control panel, then install both over SSH:
 
    ```sh
