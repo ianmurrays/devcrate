@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -201,6 +202,33 @@ func (e *environment) dial(res provider.Result, wait time.Duration) (*ssh.Client
 		return nil, err
 	}
 	return remote.Dial(res.Host, res.Port, res.User, e.key, filepath.Join(dir, "known_hosts"), e.alias(), wait)
+}
+
+// dialBooted is dial for `up`: the first time, it waits for the VM to finish
+// booting before it pins the host key. sshd can answer while the user data
+// still runs, and on a new volume the user data replaces the image's host
+// keys (volume.sh), so the key a first connection pins would stop matching.
+// Once a key is pinned, dial itself retries until the VM serves it.
+func (e *environment) dialBooted(res provider.Result, wait time.Duration) (*ssh.Client, error) {
+	dir, err := configDir()
+	if err != nil {
+		return nil, err
+	}
+	knownHosts := filepath.Join(dir, "known_hosts")
+	if remote.Pinned(knownHosts, e.alias()) {
+		return e.dial(res, wait)
+	}
+	client, err := e.dial(res, wait)
+	if err != nil {
+		return nil, err
+	}
+	// Non-zero when "degraded"; only the wait matters.
+	remote.Run(client, "systemctl is-system-running --wait", nil, io.Discard, io.Discard)
+	client.Close()
+	if err := remote.Unpin(knownHosts, e.alias()); err != nil {
+		return nil, err
+	}
+	return e.dial(res, wait)
 }
 
 // writeSSHConfig points the Environment's block in ~/.ssh/devcrate_config at
