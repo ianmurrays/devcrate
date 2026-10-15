@@ -542,8 +542,11 @@ type config struct {
 	Providers    map[string]map[string]any `toml:"providers"`
 	Devcontainer *bool                     `toml:"devcontainer"`
 	ForwardEnv   []string                  `toml:"forward_env"`
-	ForwardFiles []string                  `toml:"forward_files"`
-	IdleTimeout  any                       `toml:"idle_timeout"` // see repo.ParseIdleTimeout
+	// ForwardEnvCommands maps an env var to a laptop shell command whose
+	// stdout is the forwarded value.
+	ForwardEnvCommands map[string]string `toml:"forward_env_commands"`
+	ForwardFiles       []string          `toml:"forward_files"`
+	IdleTimeout        any               `toml:"idle_timeout"` // see repo.ParseIdleTimeout
 	// SetupScriptInContainer runs ~/.config/devcrate/setup.sh in the
 	// devcontainer instead of on the VM.
 	SetupScriptInContainer bool `toml:"setup_script_in_container"`
@@ -574,6 +577,11 @@ func loadConfig() (*config, error) {
 	path := filepath.Join(cfg.dir, "config.toml")
 	if _, err := toml.DecodeFile(path, cfg); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, name := range cfg.ForwardEnv {
+		if _, ok := cfg.ForwardEnvCommands[name]; ok {
+			return nil, fmt.Errorf("%s: %s is in both forward_env and forward_env_commands; keep one", path, name)
+		}
 	}
 	return cfg, nil
 }

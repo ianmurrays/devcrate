@@ -6,8 +6,11 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -18,8 +21,8 @@ import (
 //go:embed creds.sh
 var credsScript string
 
-// pushCreds writes the current laptop values of the user config's forward_env
-// and forward_files to the VM's tmpfs, replacing what was there.
+// pushCreds writes the current laptop values of the user config's forward_env,
+// forward_env_commands and forward_files to the VM's tmpfs, replacing what was there.
 func pushCreds(client *ssh.Client) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -49,6 +52,20 @@ func (c *config) credsArchive() (*bytes.Buffer, error) {
 			continue
 		}
 		fmt.Fprintf(&env, "export %s=%s\n", name, shellQuote(value))
+		fmt.Fprintln(&names, name)
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.ForwardEnvCommands)) {
+		if !envName.MatchString(name) {
+			return nil, fmt.Errorf("forward_env_commands: %q is not an environment variable name", name)
+		}
+		cmd := exec.Command("sh", "-c", c.ForwardEnvCommands[name])
+		cmd.Stderr = os.Stderr
+		out, err := cmd.Output()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "devcrate: forward_env_commands: the command for %s failed (%v); not forwarding it\n", name, err)
+			continue
+		}
+		fmt.Fprintf(&env, "export %s=%s\n", name, shellQuote(strings.TrimSuffix(string(out), "\n")))
 		fmt.Fprintln(&names, name)
 	}
 

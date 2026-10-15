@@ -107,7 +107,17 @@ forward_files = ["~/.npmrc", "~/.config/gh/hosts.yml"] # files under your home d
 
 On every `up` and `devcrate ssh`, devcrate reads their current values on your laptop and writes them to the VM's tmpfs (`/run/devcrate/creds/env` and `/run/devcrate/creds/files/<path>`, mode 0600), never to the volume. So a rotated token takes effect on your next connection, and nothing is left after a Stop. Login shells on the VM and in the devcontainer source the env vars, `~/<path>` is a symlink to each file, and `/run/devcrate/creds` is mounted read-only into the devcontainer. Lifecycle hooks such as `postCreateCommand` and both setup scripts see the env vars too. An env var that is unset on your laptop, or a file that is missing, is skipped with a warning.
 
-These keys are rejected in `.devcrate.toml` (as is `forward_agent`): a repo cannot ask for your secrets.
+To keep a secret out of your shell's environment, give its value as a command instead. devcrate runs each one on your laptop with `sh -c` on every `up` and `devcrate ssh`, and forwards its stdout (trailing newline trimmed) the same way as a `forward_env` value:
+
+```toml
+# ~/.config/devcrate/config.toml
+[forward_env_commands]
+CLAUDE_CODE_OAUTH_TOKEN = "op read 'op://Private/Claude Code token/credential'"
+```
+
+A command that fails skips its var with a warning. A var cannot be in both `forward_env` and `[forward_env_commands]`.
+
+`forward_env`, `forward_env_commands`, `forward_files` and `forward_agent` are rejected in `.devcrate.toml`: a repo cannot ask for your secrets.
 
 ### Build secrets
 
