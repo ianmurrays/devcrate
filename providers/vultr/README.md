@@ -22,7 +22,7 @@ region = "ewr"
 
 ## Idle stop
 
-When the Environment is Idle, the Agent deletes its own instance with a key that can do nothing else. The volume detaches by itself and stays, as after `devcrate stop`.
+When the Environment is Idle, the Agent destroys its own instance with a key that can do nothing else. The volume detaches by itself and stays, as after `devcrate stop`.
 
 On the first `up`, the Provider creates a service user and an IAM policy, both named `devcrate-<name>` (Vultr requires an email and a password for the user: the Provider makes up both, and neither is used). On every `up`, it:
 

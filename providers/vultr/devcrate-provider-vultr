@@ -244,7 +244,8 @@ self_stop_key() {
 	doc=$(jq -nc --arg r "instance:$1" '{Version: "2012-10-17", Statement: [{Action: ["compute.instance.Delete"], Effect: "Allow", Resource: [$r]}]}')
 	uid=$(user_id)
 	if [ -z "$uid" ]; then
-		# Vultr requires an email and a password, neither of which is ever used.
+		# Vultr requires an email and a password, neither of which is ever
+		# used. Dc1! covers any upper, lower, digit and symbol rule.
 		pw="Dc1!$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 		out=$(api POST /users "$(jq -nc --arg n "$res" --arg e "$res-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')@example.com" --arg p "$pw" \
 			'{name: $n, email: $e, password: $p, service_user: true, api_enabled: true}')")

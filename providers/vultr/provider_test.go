@@ -231,6 +231,7 @@ func TestUpAfterStopRotatesTheSelfStopKey(t *testing.T) {
 	var first, second upResult
 	f.ok("up", "api", opts, &first)
 	old := f.selfStopKey("api", first.SelfStopEnv["VULTR_API_KEY"])
+	// policies[0] is the fake's system policy.
 	userID, policyID := f.api.users[0].ID, f.api.policies[1].ID
 
 	f.ok("stop", "api", opts, nil)
