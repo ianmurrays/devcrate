@@ -149,10 +149,18 @@ for root in "Docker's data-root:$docker_root" "containerd's root:$containerd_roo
 	esac
 done
 
+# The VM has only the forwarded SSH agent, no HTTPS credentials, so GitHub
+# HTTPS URLs go over SSH. The host key is pinned from api.github.com/meta.
+# ponytail: GitHub only, add other hosts when someone uses them.
+git config --system url."git@github.com:".insteadOf https://github.com/
+grep -qs '^github.com ssh-ed25519 ' /etc/ssh/ssh_known_hosts ||
+	echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >>/etc/ssh/ssh_known_hosts
+
+# remote.origin.url, not `remote get-url`: get-url applies the rewrite above.
 if [ ! -d "$workspace/.git" ]; then
 	git clone "$origin" "$workspace"
-elif [ "$(git -C "$workspace" remote get-url origin)" != "$origin" ]; then
-	echo "devcrate: this Environment holds a clone of $(git -C "$workspace" remote get-url origin), not $origin: set name in .devcrate.toml to give this repo its own Environment" >&2
+elif [ "$(git -C "$workspace" config --get remote.origin.url)" != "$origin" ]; then
+	echo "devcrate: this Environment holds a clone of $(git -C "$workspace" config --get remote.origin.url), not $origin: set name in .devcrate.toml to give this repo its own Environment" >&2
 	exit 1
 fi
 
