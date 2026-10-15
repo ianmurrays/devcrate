@@ -172,7 +172,7 @@ A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted
 
 devcrate does not install `gh`. Install it from a [setup script](#setup-scripts) and authenticate it with a forwarded [credential](#credentials).
 
-On the VM, install it from GitHub's apt repository in your user script. The rest of the root disk is fresh on every resume, so the script installs it again then; bake it into your Provider's base image to skip that.
+On the VM, install it from GitHub's apt repository in your user script. Only `/root` is on the volume, so the root disk outside it is fresh on every resume and the script installs `gh` again then; bake it into your Provider's base image to skip that.
 
 ```sh
 # ~/.config/devcrate/setup.sh
@@ -196,7 +196,7 @@ To authenticate, forward a token. `gh` uses `GITHUB_TOKEN` as is, with no `gh au
 forward_env = ["GITHUB_TOKEN"]
 ```
 
-Or, to forward the token of your laptop's own `gh` login (a var cannot be in both):
+Or, to forward the token of your laptop's own `gh` login:
 
 ```toml
 # ~/.config/devcrate/config.toml
@@ -206,7 +206,7 @@ GITHUB_TOKEN = "gh auth token"
 
 Forwarding `~/.config/gh/hosts.yml` in `forward_files` works instead only if the token is stored in that file. By default `gh` on macOS keeps it in the keychain, and `hosts.yml` has no token.
 
-The forwarded env vars are set in login shells, so `devcrate ssh <name>` has them but a one-off command needs a login shell to check: `devcrate ssh <name> -- 'bash -lc "gh auth status"'`.
+The forwarded env vars are set in login shells, so `devcrate ssh <name>` has them but a one-off command, on the VM or with `--container`, needs a login shell to check: `devcrate ssh <name> -- 'bash -lc "gh auth status"'`.
 
 ## Connecting
 
