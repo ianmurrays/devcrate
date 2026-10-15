@@ -61,6 +61,8 @@ devcrate writes it to a root-only file on the droplet's tmpfs (`/run/devcrate/se
 
 devcrate expects the droplet to come up with Docker (29 or newer) and the devcontainer CLI (0.80.0 or newer, at `/opt/devcontainers`) already installed. `up` installs either one if it is missing, but on every resume of a fresh droplet that costs a minute or more, so bake them into a snapshot. Do not bake in the Agent: `up` pushes the version matching your `devcrate`.
 
+Bake in the tools your user setup script installs on the VM, such as the [GitHub CLI](../../README.md#github-cli), the same way: the script then skips them on every resume.
+
 With [Packer](https://developer.hashicorp.com/packer) and its DigitalOcean plugin (reads `DIGITALOCEAN_TOKEN` from the environment):
 
 ```hcl

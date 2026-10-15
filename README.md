@@ -122,7 +122,7 @@ List the env vars and files every Environment should get in your user config:
 ```toml
 # ~/.config/devcrate/config.toml
 forward_env = ["GITHUB_TOKEN", "NPM_TOKEN"]
-forward_files = ["~/.npmrc", "~/.config/gh/hosts.yml"] # files under your home directory
+forward_files = ["~/.npmrc", "~/.gitconfig"] # files under your home directory
 ```
 
 On every `up` and `devcrate ssh`, devcrate reads their current values on your laptop and writes them to the VM's tmpfs (`/run/devcrate/creds/env` and `/run/devcrate/creds/files/<path>`, mode 0600), never to the volume. So a rotated token takes effect on your next connection, and nothing is left after a Stop. Login shells on the VM and in the devcontainer source the env vars, `~/<path>` is a symlink to each file, and `/run/devcrate/creds` is mounted read-only into the devcontainer. Lifecycle hooks such as `postCreateCommand` and both setup scripts see the env vars too. An env var that is unset on your laptop, or a file that is missing, is skipped with a warning.
@@ -167,6 +167,46 @@ Limits:
 ### Trust model
 
 A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted-with-their-vm.md`). Its `devcontainer up` sees every forwarded env var and your forwarded SSH agent, and its `build.options` may name any env var or root-readable file on the VM as a secret. The boundary devcrate holds is on your laptop: which secrets leave it is set only in your user config. Don't `up` a repo you don't trust while forwarding secrets.
+
+## GitHub CLI
+
+devcrate does not install `gh`. Install it from a [setup script](#setup-scripts) and authenticate it with a forwarded [credential](#credentials).
+
+On the VM, install it from GitHub's apt repository in your user script. Only `/root` is on the volume, so the root disk outside it is fresh on every resume and the script installs `gh` again then; bake it into your Provider's base image to skip that.
+
+```sh
+# ~/.config/devcrate/setup.sh
+set -eu
+if ! command -v gh >/dev/null; then
+	mkdir -p -m 755 /etc/apt/keyrings
+	curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+	chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+	echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+	apt-get update -q
+	apt-get install -y -q gh
+fi
+```
+
+In the devcontainer, add the `ghcr.io/devcontainers/features/github-cli:1` feature to the repo's `devcontainer.json`. With `setup_script_in_container = true` the user script runs as the container's `remoteUser`, which may not be allowed to run `apt-get`.
+
+To authenticate, forward a token. `gh` uses `GITHUB_TOKEN` as is, with no `gh auth login` on the Environment:
+
+```toml
+# ~/.config/devcrate/config.toml
+forward_env = ["GITHUB_TOKEN"]
+```
+
+Or, to forward the token of your laptop's own `gh` login:
+
+```toml
+# ~/.config/devcrate/config.toml
+[forward_env_commands]
+GITHUB_TOKEN = "gh auth token"
+```
+
+Forwarding `~/.config/gh/hosts.yml` in `forward_files` works instead only if the token is stored in that file. By default `gh` on macOS keeps it in the keychain, and `hosts.yml` has no token.
+
+The forwarded env vars are set in login shells, so `devcrate ssh <name>` has them but a one-off command, on the VM or with `--container`, needs a login shell to check: `devcrate ssh <name> -- 'bash -lc "gh auth status"'`.
 
 ## Connecting
 
