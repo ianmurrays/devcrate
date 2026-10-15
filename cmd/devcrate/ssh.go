@@ -58,6 +58,9 @@ func sshCmd(flags map[string]string, args []string) error {
 	tty := len(command) == 0 && term.IsTerminal(int(os.Stdin.Fd()))
 	if err == nil && flags["--container"] != "" {
 		command, err = env.containerCommand(client, command, tty)
+	} else if tty {
+		// An interactive VM session starts in the clone, or home if there is none.
+		command = []string{`cd /var/lib/devcrate/workspace 2>/dev/null; exec "$SHELL" -l`}
 	}
 	client.Close()
 	if err != nil {

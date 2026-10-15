@@ -150,7 +150,7 @@ A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted
 
 ## Connecting
 
-`devcrate ssh [name]` opens a root shell on the VM, and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment. `devcrate ssh --container [name]` does the same inside the running devcontainer, as its `remoteUser`, and fails rather than fall back to the VM when there is none.
+`devcrate ssh [name]` opens a root shell on the VM in the clone (`/var/lib/devcrate/workspace`), and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment. `devcrate ssh --container [name]` does the same inside the running devcontainer, as its `remoteUser`, and fails rather than fall back to the VM when there is none.
 
 The devcontainer CLI runs as root on the VM, so by default it changes a non-root `remoteUser`'s uid to 0 (it matches the uid of the user running it). To keep the `remoteUser`'s own uid, set `"updateRemoteUserUID": false` in `devcontainer.json`.
 
