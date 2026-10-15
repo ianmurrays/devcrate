@@ -114,7 +114,7 @@ func TestUpCreatesVolumeThenInstanceAndAttachesIt(t *testing.T) {
 		t.Errorf("ssh keys = %+v, instance's = %v", v.sshKeys, i.SSHKeys)
 	}
 
-	// No self_stop_env yet: Self-stop on Vultr is the next ticket.
+	// No self_stop_env yet: Self-stop on Vultr is #40.
 	want := upResult{State: "running", Host: i.MainIP, User: "root", Port: 22}
 	if mustJSON(res) != mustJSON(want) || i.MainIP == "0.0.0.0" {
 		t.Errorf("up = %s, want %s", mustJSON(res), mustJSON(want))
@@ -356,6 +356,18 @@ func TestOptionsReachTheAPI(t *testing.T) {
 	b, i := f.api.blocks[0], f.api.instances[0]
 	if b.Region != "ams" || b.SizeGB != 100 || i.Region != "ams" || i.Plan != "vc2-4c-8gb" || i.SnapshotID != "snap-123" || i.OSID != 0 {
 		t.Errorf("volume %+v, instance %+v", b, i)
+	}
+}
+
+func TestUpWithoutAnUbuntuLTSImageIsAClearError(t *testing.T) {
+	f := newFixture(t)
+	f.api.images = []osImage{{2465, "Ubuntu 24.10 x64"}}
+	r := f.run("up", "api", opts)
+	if r.Code == 0 || !strings.Contains(r.Stderr, "vultr: no Ubuntu LTS x64 image in GET /v2/os: set image to a snapshot ID") {
+		t.Errorf("exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	if len(f.api.instances) != 0 {
+		t.Errorf("instances = %+v, want none", f.api.instances)
 	}
 }
 

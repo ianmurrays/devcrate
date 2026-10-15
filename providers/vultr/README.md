@@ -2,7 +2,7 @@
 
 `devcrate-provider-vultr` ships with devcrate: it sits next to the `devcrate` executable, where devcrate looks for Providers after `PATH` and `~/.config/devcrate/providers/`. It is a shell script that speaks the Provider contract (`docs/adr/0001-providers-are-external-executables.md`) by calling the [Vultr API](https://www.vultr.com/api/) with `curl` and `jq` on your laptop. It does not use `vultr-cli`.
 
-An Environment `<name>` is an instance named `devcrate-<name>` and tagged `devcrate:<name>`, and a NVMe (`high_perf`) block volume labelled `devcrate-<name>`. Vultr volumes have no tags, so the Provider finds them by label. The volume is mounted at `/var/lib/devcrate` and holds the repo, `/root`, Docker's images and containers, and the devcontainer.
+An Environment `<name>` is an instance named `devcrate-<name>` and tagged `devcrate:<name>`, and an NVMe (`high_perf`) block volume labelled `devcrate-<name>`. Vultr volumes have no tags, so the Provider finds them by label. The volume is mounted at `/var/lib/devcrate` and holds the repo, `/root`, Docker's images and containers, and the devcontainer.
 
 - `up` creates the volume if it is missing, then an instance, waits for it to be active, and attaches the volume live (or starts an instance that is halted).
 - `stop` destroys the instance and keeps the volume, which Vultr detaches by itself. A stopped Environment costs only the volume's storage (see [Cost](#cost)).

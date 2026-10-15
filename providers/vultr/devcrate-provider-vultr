@@ -4,7 +4,7 @@
 # README.md next to it.
 #
 # An Environment <name> is an instance named devcrate-<name> and tagged
-# devcrate:<name>, and a NVMe block volume labelled devcrate-<name> (volumes
+# devcrate:<name>, and an NVMe block volume labelled devcrate-<name> (volumes
 # have no tags). A stopped Environment is its volume with no instance.
 set -eu
 
@@ -57,8 +57,8 @@ api() {
 	esac
 }
 
-# retry METHOD PATH [JSON] calls the API until it succeeds, for up to 60
-# polls, then fails with the API's error.
+# retry METHOD PATH [JSON] calls the API until it succeeds, up to 61 times
+# $poll seconds apart, then fails with the API's error.
 retry() {
 	n=0
 	until (api "$@") >/dev/null 2>&1; do
@@ -142,8 +142,10 @@ source_image() {
 		return
 	fi
 	out=$(api GET "/os?per_page=500")
-	printf '%s' "$out" | jq -c '[.os[] | select(.name | test("^Ubuntu [0-9]+\\.04 LTS x64$"))]
-		| max_by(.name | capture("(?<v>[0-9]+)").v | tonumber) | {os_id: .id}'
+	src=$(printf '%s' "$out" | jq -c '[.os[] | select(.name | test("^Ubuntu [0-9]+\\.04 LTS x64$"))]
+		| max_by(.name | capture("(?<v>[0-9]+)").v | tonumber) // empty | {os_id: .id}')
+	[ -n "$src" ] || die "no Ubuntu LTS x64 image in GET /v2/os: set image to a snapshot ID"
+	echo "$src"
 }
 
 # user_data mounts the volume at /var/lib/devcrate (formatting it on first
@@ -199,13 +201,13 @@ up() {
 	fi
 
 	# Wait for the instance (a new one, or one another up is creating) to
-	# be active with an IP, up to 10 minutes.
+	# be active and running with an IP, for up to 120 polls (10 minutes).
 	n=0
 	while :; do
 		s=$(status)
 		[ "$(printf '%s' "$s" | jq -r .state)" = running ] && break
 		n=$((n + 1))
-		[ "$n" -lt 120 ] || die "$res did not become active within 10 minutes: $s"
+		[ "$n" -lt 120 ] || die "$res is not running after 120 polls, $poll seconds apart: $s"
 		sleep "$poll"
 	done
 
