@@ -567,9 +567,9 @@ func (c *config) agentSock() string {
 	if c.SSHAgent == "" {
 		return os.Getenv("SSH_AUTH_SOCK")
 	}
-	if rest, ok := strings.CutPrefix(c.SSHAgent, "~/"); ok {
+	if c.SSHAgent == "~" || strings.HasPrefix(c.SSHAgent, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, rest)
+			return filepath.Join(home, c.SSHAgent[1:])
 		}
 	}
 	return c.SSHAgent

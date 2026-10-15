@@ -37,6 +37,7 @@ func TestAgentSock(t *testing.T) {
 		{"default agent", config{}, "/tmp/default.sock"},
 		{"ssh_agent wins", config{SSHAgent: "/tmp/1p.sock"}, "/tmp/1p.sock"},
 		{"tilde expands", config{SSHAgent: "~/Library/Group Containers/agent.sock"}, "/home/me/Library/Group Containers/agent.sock"},
+		{"bare tilde", config{SSHAgent: "~"}, "/home/me"},
 		{"forward_agent off", config{SSHAgent: "/tmp/1p.sock", ForwardAgent: &off}, ""},
 	} {
 		if got := tc.cfg.agentSock(); got != tc.want {

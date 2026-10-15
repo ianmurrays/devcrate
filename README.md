@@ -162,7 +162,7 @@ Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config
 
 The accepted risk: while you are connected, root on the VM (and so the repo you `up`, see ADR 0005) can use your keys, though it cannot copy them. Add keys with `ssh-add -c` to confirm every use, or load a dedicated key for git hosting only. Set `forward_agent = false` in `~/.config/devcrate/config.toml` (user config only; `.devcrate.toml` may not set it) to turn forwarding off everywhere.
 
-devcrate forwards the agent `$SSH_AUTH_SOCK` names. If your keys live in another agent, such as 1Password's, set `ssh_agent` in `~/.config/devcrate/config.toml` (user config only) to forward that socket instead, on `up`, `devcrate ssh` and in the SSH config block (as `IdentityAgent`). A leading `~` expands to your home directory. `forward_agent = false` still turns forwarding off.
+devcrate forwards the SSH agent `$SSH_AUTH_SOCK` names. If your keys live in another SSH agent, such as 1Password's, set `ssh_agent` in `~/.config/devcrate/config.toml` (user config only) to forward that socket instead, on `up`, `devcrate ssh` and in the SSH config block (as `IdentityAgent`). A leading `~` expands to your home directory. `forward_agent = false` still turns forwarding off.
 
 ```toml
 ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
