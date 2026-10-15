@@ -15,7 +15,8 @@ import (
 )
 
 // TestLiveSmoke runs devcrate against a real Vultr account. It creates an
-// instance and a volume (billed) and deletes them at the end. It is skipped
+// instance and a volume (billed), and the Self-stop service user, policy and
+// key, and deletes them all at the end. It is skipped
 // unless all of these are set:
 //
 //	VULTR_API_KEY                  the account's API key
@@ -23,8 +24,8 @@ import (
 //	DEVCRATE_VULTR_SMOKE_REPO      public https git URL of a repo with a devcontainer.json
 //
 // and optionally DEVCRATE_VULTR_SMOKE_IMAGE (a snapshot ID) and
-// DEVCRATE_VULTR_SMOKE_PLAN. Idle stop is off (Self-stop is not supported
-// yet), so it stops with devcrate stop. Run with
+// DEVCRATE_VULTR_SMOKE_PLAN. It stops once with devcrate stop, and once by
+// leaving the Environment Idle until it Self-stops. Run with
 //
 //	go test -v -run TestLiveSmoke -timeout 60m ./providers/vultr/
 func TestLiveSmoke(t *testing.T) {
@@ -65,7 +66,8 @@ func TestLiveSmoke(t *testing.T) {
 	name := "smoke-" + hex.EncodeToString(suffix)
 	home := t.TempDir()
 	dir := filepath.Join(t.TempDir(), name)
-	env := append(os.Environ(), "HOME="+home)
+	// The Agent checks for Idle every 10s instead of every minute.
+	env := append(os.Environ(), "HOME="+home, "DEVCRATE_TEST_AGENT_POLL=10s")
 
 	run := func(name string, args ...string) string {
 		t.Helper()
@@ -106,6 +108,32 @@ func TestLiveSmoke(t *testing.T) {
 		}
 		return n
 	}
+	// iam counts the service users and policies named devcrate-<name>, and
+	// the user's keys.
+	iam := func() (users, policies, keys int) {
+		var u struct {
+			Users []struct{ ID, Name string }
+		}
+		get("/users?per_page=500", &u)
+		for _, x := range u.Users {
+			if x.Name == "devcrate-"+name {
+				users++
+				var k struct {
+					APIKeys []any `json:"api_keys"`
+				}
+				get("/users/"+x.ID+"/apikeys", &k)
+				keys += len(k.APIKeys)
+			}
+		}
+		var p struct{ Policies []struct{ Name string } }
+		get("/policies?per_page=500", &p)
+		for _, x := range p.Policies {
+			if x.Name == "devcrate-"+name {
+				policies++
+			}
+		}
+		return
+	}
 	volumes := func() int {
 		var out struct{ Blocks []struct{ Label string } }
 		get("/blocks?per_page=500", &out)
@@ -133,7 +161,7 @@ func TestLiveSmoke(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".config/devcrate/config.toml"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	toml := "provider = \"vultr\"\nname = " + quote(name) + "\nidle_timeout = 0\n"
+	toml := "provider = \"vultr\"\nname = " + quote(name) + "\nidle_timeout = \"3m\"\n"
 	if err := os.WriteFile(filepath.Join(dir, ".devcrate.toml"), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -174,10 +202,31 @@ func TestLiveSmoke(t *testing.T) {
 		t.Errorf("devcontainer after resume = %q, want the same container %q", again, container)
 	}
 
-	// 4. delete leaves no instance or volume behind.
+	// The resume rotated the Self-stop key: one user, policy and key.
+	if u, p, k := iam(); u != 1 || p != 1 || k != 1 {
+		t.Errorf("after resume: %d users, %d policies, %d keys; want 1 each", u, p, k)
+	}
+
+	// 4. Left Idle, it Self-stops with that key and keeps the volume.
+	start = time.Now()
+	for instances() != 0 {
+		if time.Since(start) > 15*time.Minute {
+			t.Fatalf("still running 15 minutes after the last ssh, with idle_timeout = 3m")
+		}
+		time.Sleep(15 * time.Second)
+	}
+	t.Logf("SELF-STOPPED %s AFTER THE LAST SSH", time.Since(start).Round(time.Second))
+	if volumes() != 1 {
+		t.Fatalf("after Self-stop: %d volumes, want 1", volumes())
+	}
+
+	// 5. delete leaves no instance, volume, user, policy or key behind.
 	devcrate("delete", "--yes")
 	if instances() != 0 || volumes() != 0 {
 		t.Errorf("after delete: %d instances, %d volumes of %s", instances(), volumes(), name)
+	}
+	if u, p, k := iam(); u != 0 || p != 0 || k != 0 {
+		t.Errorf("after delete: %d users, %d policies, %d keys", u, p, k)
 	}
 }
 

@@ -5,6 +5,11 @@ package vultr
 // Like the real one, a new instance is pending (main_ip 0.0.0.0) for a while,
 // and a volume stays attached for a while after its instance is destroyed:
 // both last a few requests ("ticks") here.
+//
+// It also keeps IAM: service users, their API keys and IP allowlists, and
+// policies. A service user's key is checked like the real one: only from an
+// allowlisted IP (the fake takes the caller's IP from from), and only for an
+// instance delete its policies grant.
 
 import (
 	"encoding/base64"
@@ -39,7 +44,53 @@ type fakeVultr struct {
 	userData map[string]string
 	// inactive makes every create fail as an account flagged for inactivity does.
 	inactive bool
+	users    []*user
+	policies []*policy
+	// from is the IP every request comes from: the laptop's unless a test
+	// sets an instance's, as when the instance runs the self-stop script.
+	from string
 }
+
+type user struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
+	ServiceUser bool   `json:"service_user"`
+	APIEnabled  bool   `json:"api_enabled"`
+	keys        []*userKey
+	allowlist   []allowed
+	policies    []string
+}
+
+type userKey struct {
+	ID     string `json:"id"`
+	APIKey string `json:"api_key"`
+	Name   string `json:"name"`
+	Expire bool   `json:"expire"`
+}
+
+type allowed struct {
+	Subnet     string `json:"subnet"`
+	SubnetSize int    `json:"subnet_size"`
+}
+
+type policy struct {
+	ID       string         `json:"id"`
+	Name     string         `json:"name"`
+	Document policyDocument `json:"policy_document"`
+	System   bool           `json:"is_system_policy"`
+}
+
+type policyDocument struct {
+	Version   string
+	Statement []struct {
+		Action   []string
+		Effect   string
+		Resource []string
+	}
+}
+
+const laptopIP = "198.51.100.7"
 
 type instance struct {
 	ID          string   `json:"id"`
@@ -85,7 +136,8 @@ type osImage struct {
 }
 
 func newFakeVultr(t *testing.T, key string) *fakeVultr {
-	v := &fakeVultr{key: key, next: 1000, userData: map[string]string{},
+	v := &fakeVultr{key: key, next: 1000, userData: map[string]string{}, from: laptopIP,
+		policies: []*policy{{ID: "6f11fb82-0000-4000-8000-000000000001", Name: "Manage DNS", System: true}},
 		regions: []region{
 			{"ewr", []string{"ddos_protection", "block_storage_high_perf", "block_storage_storage_opt"}},
 			{"ams", []string{"block_storage_high_perf"}},
@@ -245,19 +297,260 @@ func newFakeVultr(t *testing.T, key string) *fakeVultr {
 		}
 	})
 
+	mux.HandleFunc("GET /v2/users", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, map[string]any{"users": orEmpty(v.users)})
+	})
+	mux.HandleFunc("POST /v2/users", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name, Email, Password string
+			ServiceUser           bool `json:"service_user"`
+			APIEnabled            bool `json:"api_enabled"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		if body.Name == "" || body.Email == "" || body.Password == "" {
+			fail(w, 400, "Bad request.")
+			return
+		}
+		// Like the real API, a new user comes with a key named Default.
+		u := &user{ID: v.id(), Name: body.Name, Email: body.Email, ServiceUser: body.ServiceUser, APIEnabled: body.APIEnabled}
+		k := v.newKey(u, "Default")
+		reply(w, 201, map[string]any{"user": map[string]any{"id": u.ID, "name": u.Name, "email": u.Email,
+			"service_user": u.ServiceUser, "api_enabled": u.APIEnabled, "api_key": k.APIKey}})
+		v.users = append(v.users, u)
+	})
+	mux.HandleFunc("DELETE /v2/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		u := v.user(r.PathValue("id"))
+		if u == nil {
+			fail(w, 404, "User not found.")
+			return
+		}
+		v.users = slices.DeleteFunc(v.users, func(x *user) bool { return x == u })
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("GET /v2/users/{id}/policies", func(w http.ResponseWriter, r *http.Request) {
+		u := v.user(r.PathValue("id"))
+		if u == nil {
+			fail(w, 404, "User not found.")
+			return
+		}
+		direct := []*policy{}
+		for _, id := range u.policies {
+			direct = append(direct, v.policy(id))
+		}
+		reply(w, 200, map[string]any{"user_id": u.ID, "policies": map[string]any{"direct": direct, "all": direct}})
+	})
+	mux.HandleFunc("GET /v2/users/{id}/apikeys", func(w http.ResponseWriter, r *http.Request) {
+		u := v.user(r.PathValue("id"))
+		if u == nil {
+			fail(w, 404, "User not found.")
+			return
+		}
+		masked := []userKey{}
+		for _, k := range u.keys {
+			m := *k
+			m.APIKey = "*******" + k.APIKey[len(k.APIKey)-5:]
+			masked = append(masked, m)
+		}
+		reply(w, 200, map[string]any{"api_keys": masked})
+	})
+	mux.HandleFunc("POST /v2/users/{id}/apikeys", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name   string
+			Expire *bool
+		}
+		u := v.user(r.PathValue("id"))
+		if !decode(w, r, &body) {
+			return
+		}
+		switch {
+		case u == nil:
+			fail(w, 404, "User not found.")
+		case body.Expire == nil || *body.Expire:
+			fail(w, 400, "the fake only mints keys that never expire")
+		default:
+			reply(w, 202, map[string]any{"api_key": v.newKey(u, body.Name)})
+		}
+	})
+	mux.HandleFunc("DELETE /v2/users/{id}/apikeys/{key}", func(w http.ResponseWriter, r *http.Request) {
+		u := v.user(r.PathValue("id"))
+		if u == nil || !slices.ContainsFunc(u.keys, func(k *userKey) bool { return k.ID == r.PathValue("key") }) {
+			fail(w, 404, "API key not found")
+			return
+		}
+		u.keys = slices.DeleteFunc(u.keys, func(k *userKey) bool { return k.ID == r.PathValue("key") })
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("GET /v2/users/{id}/ip-whitelist", func(w http.ResponseWriter, r *http.Request) {
+		u := v.user(r.PathValue("id"))
+		if u == nil {
+			fail(w, 404, "User not found.")
+			return
+		}
+		reply(w, 200, map[string]any{"ip_whitelist": orEmpty(u.allowlist)})
+	})
+	allowlist := func(w http.ResponseWriter, r *http.Request) {
+		var body allowed
+		u := v.user(r.PathValue("id"))
+		if !decode(w, r, &body) {
+			return
+		}
+		if u == nil {
+			fail(w, 404, "User not found.")
+			return
+		}
+		u.allowlist = slices.DeleteFunc(u.allowlist, func(a allowed) bool { return a == body })
+		if r.Method == "POST" {
+			u.allowlist = append(u.allowlist, body)
+		}
+		w.WriteHeader(204)
+	}
+	mux.HandleFunc("POST /v2/users/{id}/ip-whitelist", allowlist)
+	mux.HandleFunc("DELETE /v2/users/{id}/ip-whitelist", allowlist)
+	mux.HandleFunc("GET /v2/policies", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, map[string]any{"policies": v.policies})
+	})
+	// POST and PUT reply with the bare policy; GET /policies/{id} would
+	// wrap it in "policy".
+	mux.HandleFunc("POST /v2/policies", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name     string
+			Document *policyDocument `json:"policy_document"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		if body.Name == "" || body.Document == nil {
+			fail(w, 422, "name and policy_document are required")
+			return
+		}
+		p := &policy{ID: v.id(), Name: body.Name, Document: *body.Document}
+		v.policies = append(v.policies, p)
+		reply(w, 201, p)
+	})
+	mux.HandleFunc("PUT /v2/policies/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Document *policyDocument `json:"policy_document"`
+		}
+		p := v.policy(r.PathValue("id"))
+		if !decode(w, r, &body) {
+			return
+		}
+		if p == nil || p.System {
+			fail(w, 404, "Policy Not Found")
+			return
+		}
+		if body.Document != nil {
+			p.Document = *body.Document
+		}
+		reply(w, 202, p)
+	})
+	mux.HandleFunc("DELETE /v2/policies/{id}", func(w http.ResponseWriter, r *http.Request) {
+		p := v.policy(r.PathValue("id"))
+		if p == nil || p.System {
+			fail(w, 404, "Policy Not Found")
+			return
+		}
+		v.policies = slices.DeleteFunc(v.policies, func(x *policy) bool { return x == p })
+		for _, u := range v.users {
+			u.policies = slices.DeleteFunc(u.policies, func(id string) bool { return id == p.ID })
+		}
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("POST /v2/policies/{id}/users/{user}", func(w http.ResponseWriter, r *http.Request) {
+		p, u := v.policy(r.PathValue("id")), v.user(r.PathValue("user"))
+		switch {
+		case p == nil || u == nil:
+			fail(w, 404, "Not found.")
+		case slices.Contains(u.policies, p.ID):
+			fail(w, 409, "Policy User Relationship Already Exists")
+		default:
+			u.policies = append(u.policies, p.ID)
+			reply(w, 201, map[string]any{"user_id": u.ID, "policy_id": p.ID})
+		}
+	})
+
 	v.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v.mu.Lock()
 		defer v.mu.Unlock()
 		v.calls = append(v.calls, r.Method+" "+r.URL.RequestURI())
 		defer v.tick()
-		if r.Header.Get("Authorization") != "Bearer "+v.key {
-			fail(w, 401, "Invalid API token.")
+		// The metadata service answers the instance that asks, with no key.
+		if r.Method == "GET" && r.URL.Path == "/v1/instance-v2-id" {
+			for _, i := range v.instances {
+				if i.MainIP == v.from {
+					fmt.Fprint(w, i.ID)
+					return
+				}
+			}
+			http.NotFound(w, r)
+			return
+		}
+		if bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); bearer != v.key {
+			v.asServiceUser(w, r, bearer, mux)
 			return
 		}
 		mux.ServeHTTP(w, r)
 	}))
 	t.Cleanup(v.Close)
 	return v
+}
+
+// asServiceUser serves a request made with a service user's key: only from
+// an IP on the user's allowlist, and only an instance delete that one of the
+// user's policies allows on that instance.
+func (v *fakeVultr) asServiceUser(w http.ResponseWriter, r *http.Request, bearer string, mux *http.ServeMux) {
+	var u *user
+	for _, x := range v.users {
+		if slices.ContainsFunc(x.keys, func(k *userKey) bool { return k.APIKey == bearer }) {
+			u = x
+		}
+	}
+	switch {
+	case u == nil:
+		fail(w, 401, "Invalid API token.")
+		return
+	case !slices.Contains(u.allowlist, allowed{v.from, 32}):
+		fail(w, 401, "Unauthorized IP address: "+v.from)
+		return
+	}
+	id, ok := strings.CutPrefix(r.URL.Path, "/v2/instances/")
+	if r.Method == "DELETE" && ok && !strings.Contains(id, "/") {
+		for _, pid := range u.policies {
+			for _, st := range v.policy(pid).Document.Statement {
+				if st.Effect == "Allow" && slices.Contains(st.Action, "compute.instance.Delete") && slices.Contains(st.Resource, "instance:"+id) {
+					mux.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+	}
+	fail(w, 403, "Permission denied. You do not have the required IAM permissions for this action.")
+}
+
+func (v *fakeVultr) newKey(u *user, name string) *userKey {
+	k := &userKey{ID: v.id(), APIKey: fmt.Sprintf("SVCKEY%030d", v.next), Name: name}
+	u.keys = append(u.keys, k)
+	return k
+}
+
+func (v *fakeVultr) user(id string) *user {
+	for _, u := range v.users {
+		if u.ID == id {
+			return u
+		}
+	}
+	return nil
+}
+
+func (v *fakeVultr) policy(id string) *policy {
+	for _, p := range v.policies {
+		if p.ID == id {
+			return p
+		}
+	}
+	return nil
 }
 
 // tick advances the fake clock after each request.

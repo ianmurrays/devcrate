@@ -4,15 +4,14 @@
 
 An Environment `<name>` is an instance named `devcrate-<name>` and tagged `devcrate:<name>`, and an NVMe (`high_perf`) block volume labelled `devcrate-<name>`. Vultr volumes have no tags, so the Provider finds them by label. The volume is mounted at `/var/lib/devcrate` and holds the repo, `/root`, Docker's images and containers, and the devcontainer.
 
-- `up` creates the volume if it is missing, then an instance, waits for it to be active, and attaches the volume live (or starts an instance that is halted).
+- `up` creates the volume if it is missing, then an instance, waits for it to be active, and attaches the volume live (or starts an instance that is halted). It then mints the Self-stop key (see [Idle stop](#idle-stop)).
 - `stop` destroys the instance and keeps the volume, which Vultr detaches by itself. A stopped Environment costs only the volume's storage (see [Cost](#cost)).
-- `delete` destroys the instance and the volume.
+- `delete` destroys the instance and the volume, and the Self-stop service user, policy and key.
 - `status` reads the instance by tag and the volume by label. `list` reads every volume labelled `devcrate-*`, since a stopped Environment has nothing else.
 
 ```toml
 # .devcrate.toml
 provider = "vultr"
-idle_timeout = 0 # required for now: see "Idle stop" below
 ```
 
 ```toml
@@ -21,21 +20,23 @@ idle_timeout = 0 # required for now: see "Idle stop" below
 region = "ewr"
 ```
 
-## Idle stop is not supported yet
+## Idle stop
 
-Self-stop on Vultr needs a credential scoped to the one instance, which `up` does not mint yet. Until it does, the `self-stop` verb fails, so `up` fails before creating anything unless idle stop is off:
+When the Environment is Idle, the Agent deletes its own instance with a key that can do nothing else. The volume detaches by itself and stays, as after `devcrate stop`.
 
-```
-vultr: Self-stop is not supported yet: set idle_timeout = 0 in .devcrate.toml, or at the top of ~/.config/devcrate/config.toml (see the Provider's README.md)
-```
+On the first `up`, the Provider creates a service user and an IAM policy, both named `devcrate-<name>` (Vultr requires an email and a password for the user: the Provider makes up both, and neither is used). On every `up`, it:
 
-Set `idle_timeout = 0` in the repo's `.devcrate.toml` (a top-level `idle_timeout = 0` in your user config turns idle stop off for every Provider). An Environment then runs, and bills, until you `devcrate stop` it.
+1. points the policy at the new instance: `compute.instance.Delete` on `instance:<id>`, nothing else;
+2. sets the user's IP allowlist to the instance's IPv4 address alone (a service user's allowlist starts empty, which rejects every call);
+3. mints a key for the user that never expires, and revokes every other key the user has.
+
+devcrate writes the key to a root-only tmpfs file on the instance (`/run/devcrate/self-stop.env`), never to the volume. The key does not expire because an expired key would leave a long Keep-alive Environment unable to Self-stop; the policy and the allowlist already limit it to deleting one instance, from that instance. `delete` removes the user (and so its key) and the policy. They show up in the control panel under **Account → Users** and **Account → Policies**.
 
 ## API key and tools
 
 Install `curl` and `jq` (macOS: `brew install jq`; `curl` ships with macOS). If either is missing, every verb fails with `vultr: curl is not installed ...` / `jq is not installed ...`.
 
-Create an API key in the control panel (**Account → API**). If you restrict it under **Access Control** there, allow your laptop's IP. The Provider reads the key from `VULTR_API_KEY`, or else from `api-key` in `~/.vultr-cli.yaml` (where `vultr-cli` keeps it):
+Create an API key in the control panel (**Account → API**). If you restrict it under **Access Control** there, allow your laptop's IP. It must be able to manage users and policies, which your own account's key can, for Self-stop. The Provider reads the key from `VULTR_API_KEY`, or else from `api-key` in `~/.vultr-cli.yaml` (where `vultr-cli` keeps it):
 
 ```sh
 export VULTR_API_KEY=...
@@ -59,7 +60,7 @@ The first `up` imports devcrate's public key (`~/.config/devcrate/id_ed25519.pub
 | `image` | the newest x64 Ubuntu LTS | Snapshot ID of a base image (see below), passed as `snapshot_id`. Without it, the instance runs the newest `Ubuntu NN.04 LTS x64` from `GET /v2/os`. |
 | `volume_size` | `50` | Volume size in GB (10 to 10000), used only when the volume is created. |
 
-There is no `token` option: the Provider uses your API key, and Self-stop will mint its own scoped credential.
+There is no `token` option: the Provider uses your API key, and mints Self-stop's own key (see [Idle stop](#idle-stop)).
 
 ## The base image
 
@@ -103,7 +104,7 @@ To grow the volume instead, resize it in the control panel, then `devcrate ssh <
 
 ## Live smoke test
 
-`providers/vultr/live_test.go` runs `up`, `stop`, a resume and `delete` against a real account, and logs how long the first `up` and the resume took. It is skipped unless `VULTR_API_KEY`, `DEVCRATE_VULTR_SMOKE_REGION` and `DEVCRATE_VULTR_SMOKE_REPO` (a public repo with a `devcontainer.json`) are set; `DEVCRATE_VULTR_SMOKE_IMAGE` and `DEVCRATE_VULTR_SMOKE_PLAN` are optional. It creates billed resources and deletes them at the end:
+`providers/vultr/live_test.go` runs `up`, `stop`, a resume, an idle Self-stop and `delete` against a real account, and logs how long the first `up`, the resume and the Self-stop took. It is skipped unless `VULTR_API_KEY`, `DEVCRATE_VULTR_SMOKE_REGION` and `DEVCRATE_VULTR_SMOKE_REPO` (a public repo with a `devcontainer.json`) are set; `DEVCRATE_VULTR_SMOKE_IMAGE` and `DEVCRATE_VULTR_SMOKE_PLAN` are optional. It creates billed resources and deletes them at the end:
 
 ```sh
 go test -v -run TestLiveSmoke -timeout 60m ./providers/vultr/

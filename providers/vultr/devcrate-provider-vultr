@@ -6,6 +6,7 @@
 # An Environment <name> is an instance named devcrate-<name> and tagged
 # devcrate:<name>, and an NVMe block volume labelled devcrate-<name> (volumes
 # have no tags). A stopped Environment is its volume with no instance.
+# Self-stop uses a service user and an IAM policy, both named devcrate-<name>.
 set -eu
 
 die() {
@@ -219,7 +220,64 @@ up() {
 	if [ "$(printf '%s' "$v" | jq -r .attached_to_instance)" != "$id" ]; then
 		retry POST "/blocks/$vol/attach" "$(jq -nc --arg i "$id" '{instance_id: $i, live: true}')"
 	fi
-	echo "$s"
+	printf '%s' "$s" | jq -c --arg k "$(self_stop_key "$id" "$(printf '%s' "$s" | jq -r .host)")" \
+		'. + {self_stop_env: {VULTR_API_KEY: $k}}'
+}
+
+# user_id and policy_id print the ID of the Environment's service user and
+# IAM policy, or nothing.
+user_id() {
+	out=$(api GET "/users?per_page=500")
+	printf '%s' "$out" | jq -r --arg n "$res" '[.users[] | select(.name == $n and .service_user)][0].id // empty'
+}
+policy_id() {
+	out=$(api GET "/policies?per_page=500")
+	printf '%s' "$out" | jq -r --arg n "$res" '[.policies[] | select(.name == $n and (.is_system_policy | not))][0].id // empty'
+}
+
+# self_stop_key ID IP points the Environment's policy at instance ID and its
+# service user's allowlist at IP (creating both the first time), then prints
+# a new key for the user and revokes every other one. The key can only
+# delete that instance, only from that IP. It never expires: an expired key
+# would leave a long Keep-alive Environment unable to Self-stop.
+self_stop_key() {
+	doc=$(jq -nc --arg r "instance:$1" '{Version: "2012-10-17", Statement: [{Action: ["compute.instance.Delete"], Effect: "Allow", Resource: [$r]}]}')
+	uid=$(user_id)
+	if [ -z "$uid" ]; then
+		# Vultr requires an email and a password, neither of which is ever used.
+		pw="Dc1!$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+		out=$(api POST /users "$(jq -nc --arg n "$res" --arg e "$res-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')@example.com" --arg p "$pw" \
+			'{name: $n, email: $e, password: $p, service_user: true, api_enabled: true}')")
+		uid=$(printf '%s' "$out" | jq -r .user.id)
+	fi
+	pid=$(policy_id)
+	if [ -z "$pid" ]; then
+		out=$(api POST /policies "$(jq -nc --arg n "$res" --argjson d "$doc" \
+			'{name: $n, description: "devcrate Self-stop", policy_document: $d}')")
+		pid=$(printf '%s' "$out" | jq -r .id)
+	else
+		api PUT "/policies/$pid" "$(jq -nc --argjson d "$doc" '{policy_document: $d}')" >/dev/null
+	fi
+	out=$(api GET "/users/$uid/policies")
+	if ! printf '%s' "$out" | jq -e --arg p "$pid" '.policies.direct | any(.id == $p)' >/dev/null; then
+		api POST "/policies/$pid/users/$uid" >/dev/null
+	fi
+
+	# A service user's allowlist starts empty, which rejects every call.
+	out=$(api GET "/users/$uid/ip-whitelist")
+	for a in $(printf '%s' "$out" | jq -c --arg ip "$2" '.ip_whitelist[] | select(.subnet != $ip or .subnet_size != 32) | {subnet, subnet_size}'); do
+		api DELETE "/users/$uid/ip-whitelist" "$a" >/dev/null
+	done
+	api POST "/users/$uid/ip-whitelist" "$(jq -nc --arg ip "$2" '{subnet: $ip, subnet_size: 32}')" >/dev/null
+
+	new=$(api POST "/users/$uid/apikeys" "$(jq -nc --arg n "$res" '{name: $n, expire: false}')")
+	# Revoke every other key: the previous up's, and the Default one Vultr
+	# creates with the user.
+	out=$(api GET "/users/$uid/apikeys")
+	for old in $(printf '%s' "$out" | jq -r --arg k "$(printf '%s' "$new" | jq -r .api_key.id)" '.api_keys[] | select(.id != $k) | .id'); do
+		api DELETE "/users/$uid/apikeys/$old" >/dev/null
+	done
+	printf '%s' "$new" | jq -r .api_key.api_key
 }
 
 # stop destroys the instance; Vultr detaches the volume, which stays.
@@ -236,6 +294,15 @@ delete() {
 	if [ -n "$v" ]; then
 		# The volume detaches from the destroyed instance asynchronously.
 		retry DELETE "/blocks/$(printf '%s' "$v" | jq -r .id)"
+	fi
+	# The user's keys go with it.
+	uid=$(user_id)
+	if [ -n "$uid" ]; then
+		api DELETE "/users/$uid" >/dev/null
+	fi
+	pid=$(policy_id)
+	if [ -n "$pid" ]; then
+		api DELETE "/policies/$pid" >/dev/null
 	fi
 }
 
@@ -256,11 +323,17 @@ if [ "$verb" != list ] && [ -z "$name" ]; then
 fi
 for_env "$name"
 
-# ponytail: no Self-stop until up mints a credential scoped to the instance.
-# devcrate asks for this before up, so with idle stop on, up fails before it
-# creates anything.
+# self-stop prints the script the Agent runs on the instance, with
+# self_stop_env ($VULTR_API_KEY, which up mints) sourced: destroy this
+# instance, never the volume. It needs no API key on the laptop. -4 because
+# the key's allowlist holds the instance's IPv4 address.
 if [ "$verb" = self-stop ]; then
-	die "Self-stop is not supported yet: set idle_timeout = 0 in .devcrate.toml, or at the top of ~/.config/devcrate/config.toml (see the Provider's README.md)"
+	jq -n --arg s '#!/bin/sh
+set -eu
+id=$(curl -4 -sSf "${VULTR_METADATA_URL:-http://169.254.169.254}/v1/instance-v2-id")
+exec curl -4 -sSf -X DELETE -H "Authorization: Bearer $VULTR_API_KEY" "${VULTR_API_URL:-https://api.vultr.com/v2}/instances/$id"
+' '{script: $s}'
+	exit
 fi
 
 key=${VULTR_API_KEY:-}

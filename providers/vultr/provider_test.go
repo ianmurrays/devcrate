@@ -6,6 +6,7 @@ package vultr
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,8 +115,8 @@ func TestUpCreatesVolumeThenInstanceAndAttachesIt(t *testing.T) {
 		t.Errorf("ssh keys = %+v, instance's = %v", v.sshKeys, i.SSHKeys)
 	}
 
-	// No self_stop_env yet: Self-stop on Vultr is #40.
-	want := upResult{State: "running", Host: i.MainIP, User: "root", Port: 22}
+	want := upResult{State: "running", Host: i.MainIP, User: "root", Port: 22,
+		SelfStopEnv: map[string]string{"VULTR_API_KEY": v.users[0].keys[0].APIKey}}
 	if mustJSON(res) != mustJSON(want) || i.MainIP == "0.0.0.0" {
 		t.Errorf("up = %s, want %s", mustJSON(res), mustJSON(want))
 	}
@@ -159,8 +160,87 @@ func TestUpIsIdempotent(t *testing.T) {
 	if n := len(v.callsWith("/attach")); n != 1 {
 		t.Errorf("%d attach calls, want 1", n)
 	}
+	// Every up mints a new Self-stop key; the rest stays the same.
+	firstKey, secondKey := first.SelfStopEnv["VULTR_API_KEY"], second.SelfStopEnv["VULTR_API_KEY"]
+	if firstKey == "" || firstKey == secondKey {
+		t.Errorf("Self-stop keys %q then %q, want two different keys", firstKey, secondKey)
+	}
+	first.SelfStopEnv, second.SelfStopEnv = nil, nil
 	if mustJSON(first) != mustJSON(second) {
 		t.Errorf("second up = %s, want %s", mustJSON(second), mustJSON(first))
+	}
+}
+
+// selfStopKey checks the IAM up leaves for env: a service user and a policy
+// named devcrate-<env>, the policy allowing only the delete of the instance
+// it returns, the user allowlisted to that instance's IP alone, and key as
+// the user's only key.
+func (f *fixture) selfStopKey(env, key string) *instance {
+	f.t.Helper()
+	v := f.api
+	var u *user
+	var p *policy
+	for _, x := range v.users {
+		if x.Name == "devcrate-"+env {
+			u = x
+		}
+	}
+	for _, x := range v.policies {
+		if x.Name == "devcrate-"+env {
+			p = x
+		}
+	}
+	var i *instance
+	for _, x := range v.instances {
+		if x.Label == "devcrate-"+env {
+			i = x
+		}
+	}
+	if u == nil || p == nil || i == nil {
+		f.t.Fatalf("user %+v, policy %+v, instance %+v; want all three named devcrate-%s", u, p, i, env)
+	}
+	if !u.ServiceUser || !u.APIEnabled || !slices.Equal(u.policies, []string{p.ID}) {
+		f.t.Errorf("user = %+v, want a service user with API access and only the policy %s", u, p.ID)
+	}
+	if want := `{"Version":"2012-10-17","Statement":[{"Action":["compute.instance.Delete"],"Effect":"Allow","Resource":["instance:` + i.ID + `"]}]}`; mustJSON(p.Document) != want {
+		f.t.Errorf("policy = %s, want %s", mustJSON(p.Document), want)
+	}
+	if want := []allowed{{i.MainIP, 32}}; !slices.Equal(u.allowlist, want) {
+		f.t.Errorf("allowlist = %+v, want %+v", u.allowlist, want)
+	}
+	if len(u.keys) != 1 || u.keys[0].APIKey != key || u.keys[0].Expire {
+		f.t.Errorf("user's keys = %+v, want only %q, never expiring", u.keys, key)
+	}
+	return i
+}
+
+func TestUpMintsASelfStopKeyScopedToTheInstance(t *testing.T) {
+	f := newFixture(t)
+	var res upResult
+	f.ok("up", "api", opts, &res)
+	if len(res.SelfStopEnv) != 1 {
+		t.Fatalf("self_stop_env = %v, want VULTR_API_KEY alone", res.SelfStopEnv)
+	}
+	f.selfStopKey("api", res.SelfStopEnv["VULTR_API_KEY"])
+}
+
+// A resume repoints the same user and policy at the new instance, mints a
+// new key and revokes the old one.
+func TestUpAfterStopRotatesTheSelfStopKey(t *testing.T) {
+	f := newFixture(t)
+	var first, second upResult
+	f.ok("up", "api", opts, &first)
+	old := f.selfStopKey("api", first.SelfStopEnv["VULTR_API_KEY"])
+	userID, policyID := f.api.users[0].ID, f.api.policies[1].ID
+
+	f.ok("stop", "api", opts, nil)
+	f.ok("up", "api", opts, &second)
+	i := f.selfStopKey("api", second.SelfStopEnv["VULTR_API_KEY"])
+	if i.ID == old.ID || i.MainIP == old.MainIP {
+		t.Fatalf("resumed on %+v, want an instance other than %+v", i, old)
+	}
+	if len(f.api.users) != 1 || f.api.users[0].ID != userID || len(f.api.policies) != 2 || f.api.policies[1].ID != policyID {
+		t.Errorf("users %+v, policies %+v; want the same user and policy", f.api.users, f.api.policies)
 	}
 }
 
@@ -209,6 +289,18 @@ func TestDeleteLeavesNoInstanceOrVolume(t *testing.T) {
 	}
 	if len(v.blocks) != 1 || v.blocks[0].Label != "devcrate-web" {
 		t.Errorf("volumes = %+v, want only devcrate-web", v.blocks)
+	}
+	if len(v.users) != 1 || v.users[0].Name != "devcrate-web" {
+		t.Errorf("users = %+v, want only devcrate-web", v.users)
+	}
+	var custom []string
+	for _, p := range v.policies {
+		if !p.System {
+			custom = append(custom, p.Name)
+		}
+	}
+	if !slices.Equal(custom, []string{"devcrate-web"}) {
+		t.Errorf("policies = %v, want only devcrate-web (and the system ones)", custom)
 	}
 	var st upResult
 	f.ok("status", "api", opts, &st)
@@ -371,17 +463,85 @@ func TestUpWithoutAnUbuntuLTSImageIsAClearError(t *testing.T) {
 	}
 }
 
-// Self-stop needs a credential scoped to the instance, which up does not
-// mint yet: devcrate asks for the script before up, so with idle stop on, up
-// fails before anything is created.
-func TestSelfStopIsNotSupportedYet(t *testing.T) {
+// The self-stop script, run on the instance with self_stop_env, destroys the
+// instance it runs on (found through the metadata service) and leaves the
+// volume.
+func TestSelfStopDeletesOnlyItsOwnInstance(t *testing.T) {
 	f := newFixture(t)
-	r := f.run("self-stop", "api", opts)
-	if r.Code == 0 || !strings.Contains(r.Stderr, "vultr: Self-stop is not supported yet: set idle_timeout = 0") {
-		t.Errorf("exit %d, stderr %q", r.Code, r.Stderr)
+	var api, web upResult
+	f.ok("up", "api", opts, &api)
+	f.ok("up", "web", opts, &web)
+	var out struct{ Script string }
+	f.ok("self-stop", "api", opts, &out)
+	if !strings.Contains(out.Script, "curl -4") {
+		t.Errorf("the script does not force IPv4, which the allowlist needs:\n%s", out.Script)
 	}
-	if len(f.api.calls) != 0 {
-		t.Errorf("calls made: %v", f.api.calls)
+	script := filepath.Join(t.TempDir(), "self-stop")
+	if err := os.WriteFile(script, []byte(out.Script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// As the Agent runs it on the instance: only self_stop_env, plus PATH.
+	selfStop := func(from, key string) error {
+		f.api.from = from
+		defer func() { f.api.from = laptopIP }()
+		cmd := exec.Command(script)
+		cmd.Env = []string{"PATH=" + f.path, "VULTR_API_KEY=" + key,
+			"VULTR_API_URL=" + f.api.URL + "/v2", "VULTR_METADATA_URL=" + f.api.URL}
+		b, err := cmd.CombinedOutput()
+		t.Logf("self-stop from %s: %v: %s", from, err, b)
+		return err
+	}
+	apiKey, webKey := api.SelfStopEnv["VULTR_API_KEY"], web.SelfStopEnv["VULTR_API_KEY"]
+
+	// The key works only from its own instance's IP, and only on it.
+	if selfStop(web.Host, apiKey) == nil || selfStop(api.Host, webKey) == nil {
+		t.Error("self-stop succeeded with a key from another instance's IP")
+	}
+	// Even allowlisted on another instance, the policy refuses its delete.
+	for _, u := range f.api.users {
+		if u.Name == "devcrate-api" {
+			u.allowlist = append(u.allowlist, allowed{web.Host, 32})
+		}
+	}
+	if selfStop(web.Host, apiKey) == nil {
+		t.Error("self-stop on another instance succeeded")
+	}
+	if len(f.api.instances) != 2 {
+		t.Fatalf("instances = %+v, want both", f.api.instances)
+	}
+
+	before := len(f.api.calls)
+	if err := selfStop(api.Host, apiKey); err != nil {
+		t.Fatalf("self-stop: %v", err)
+	}
+	v := f.api
+	if len(v.instances) != 1 || v.instances[0].Label != "devcrate-web" {
+		t.Errorf("instances after self-stop = %+v, want only devcrate-web", v.instances)
+	}
+	if len(v.blocks) != 2 {
+		t.Errorf("volumes after self-stop = %+v, want both", v.blocks)
+	}
+	if calls := v.calls[before:]; len(calls) != 2 || !strings.HasPrefix(calls[1], "DELETE /v2/instances/") {
+		t.Errorf("self-stop calls = %v, want a metadata read and one DELETE", calls)
+	}
+}
+
+// A key a later up revoked no longer works.
+func TestSelfStopWithARevokedKeyFails(t *testing.T) {
+	f := newFixture(t)
+	var first, second upResult
+	f.ok("up", "api", opts, &first)
+	f.ok("up", "api", opts, &second)
+	f.api.from = second.Host
+	req, _ := http.NewRequest("DELETE", f.api.URL+"/v2/instances/"+f.api.instances[0].ID, nil)
+	req.Header.Set("Authorization", "Bearer "+first.SelfStopEnv["VULTR_API_KEY"])
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 || len(f.api.instances) != 1 {
+		t.Errorf("DELETE with the old key: %s, %d instances; want 401 and the instance kept", resp.Status, len(f.api.instances))
 	}
 }
 
