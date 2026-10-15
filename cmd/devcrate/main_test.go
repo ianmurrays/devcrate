@@ -24,3 +24,23 @@ func TestForwardRejectsCommaSeparatedPorts(t *testing.T) {
 		t.Error("-p 3000,3001 was accepted, want an error")
 	}
 }
+
+func TestAgentSock(t *testing.T) {
+	t.Setenv("HOME", "/home/me")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/default.sock")
+	off := false
+	for _, tc := range []struct {
+		name string
+		cfg  config
+		want string
+	}{
+		{"default agent", config{}, "/tmp/default.sock"},
+		{"ssh_agent wins", config{SSHAgent: "/tmp/1p.sock"}, "/tmp/1p.sock"},
+		{"tilde expands", config{SSHAgent: "~/Library/Group Containers/agent.sock"}, "/home/me/Library/Group Containers/agent.sock"},
+		{"forward_agent off", config{SSHAgent: "/tmp/1p.sock", ForwardAgent: &off}, ""},
+	} {
+		if got := tc.cfg.agentSock(); got != tc.want {
+			t.Errorf("%s: agentSock() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
