@@ -553,19 +553,35 @@ type config struct {
 	// ForwardAgent (default true) forwards the laptop's SSH agent on every
 	// devcrate SSH connection and in the SSH config entry.
 	ForwardAgent *bool `toml:"forward_agent"`
+	// SSHAgent is the agent socket to forward instead of $SSH_AUTH_SOCK,
+	// e.g. 1Password's.
+	SSHAgent string `toml:"ssh_agent"`
 }
 
-// forwardAgent is the laptop's SSH agent socket when the user config lets
-// devcrate forward it, else "".
+// agentSock is the laptop's SSH agent socket to forward, or "" when the user
+// config turns forwarding off.
+func (c *config) agentSock() string {
+	if c.ForwardAgent != nil && !*c.ForwardAgent {
+		return ""
+	}
+	if c.SSHAgent == "" {
+		return os.Getenv("SSH_AUTH_SOCK")
+	}
+	if c.SSHAgent == "~" || strings.HasPrefix(c.SSHAgent, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, c.SSHAgent[1:])
+		}
+	}
+	return c.SSHAgent
+}
+
+// forwardAgent is the user config's agentSock.
 func forwardAgent() (string, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return "", err
 	}
-	if cfg.ForwardAgent != nil && !*cfg.ForwardAgent {
-		return "", nil
-	}
-	return os.Getenv("SSH_AUTH_SOCK"), nil
+	return cfg.agentSock(), nil
 }
 
 func loadConfig() (*config, error) {

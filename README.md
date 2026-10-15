@@ -117,7 +117,7 @@ CLAUDE_CODE_OAUTH_TOKEN = "op read 'op://Private/Claude Code token/credential'"
 
 A command that fails skips its var with a warning. A var cannot be in both `forward_env` and `[forward_env_commands]`.
 
-`forward_env`, `forward_env_commands`, `forward_files` and `forward_agent` are rejected in `.devcrate.toml`: a repo cannot ask for your secrets.
+`forward_env`, `forward_env_commands`, `forward_files`, `forward_agent` and `ssh_agent` are rejected in `.devcrate.toml`: a repo cannot ask for your secrets.
 
 ### Build secrets
 
@@ -150,7 +150,7 @@ A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted
 
 ## Connecting
 
-`devcrate ssh [name]` opens a root shell on the VM, and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment. `devcrate ssh --container [name]` does the same inside the running devcontainer, as its `remoteUser`, and fails rather than fall back to the VM when there is none.
+`devcrate ssh [name]` opens a root shell on the VM in the clone (`/var/lib/devcrate/workspace`), and `devcrate ssh [name] -- <cmd>` runs one command and exits with its exit code. It never starts a stopped Environment. `devcrate ssh --container [name]` does the same inside the running devcontainer, as its `remoteUser`, and fails rather than fall back to the VM when there is none.
 
 The devcontainer CLI runs as root on the VM, so by default it changes a non-root `remoteUser`'s uid to 0 (it matches the uid of the user running it). To keep the `remoteUser`'s own uid, set `"updateRemoteUserUID": false` in `devcontainer.json`.
 
@@ -161,6 +161,12 @@ Every `up` also writes a `Host devcrate-<name>` block to `~/.ssh/devcrate_config
 `git` over SSH works on the VM and in the devcontainer with your own keys, which never leave your laptop: devcrate forwards your SSH agent on `up` (so setup scripts, `devcontainer up` and its lifecycle hooks have it), on `devcrate ssh` and in the SSH config block. Inside the devcontainer, `SSH_AUTH_SOCK=/run/devcrate/ssh-agent/agent.sock` reaches the agent of whoever connected last and is still connected, so it keeps working across reconnects; with nobody connected it refuses connections. To give an image build your agent, opt in with `"build": {"options": ["--ssh", "default"]}` in `devcontainer.json` and `RUN --mount=type=ssh ...` in the Dockerfile.
 
 The accepted risk: while you are connected, root on the VM (and so the repo you `up`, see ADR 0005) can use your keys, though it cannot copy them. Add keys with `ssh-add -c` to confirm every use, or load a dedicated key for git hosting only. Set `forward_agent = false` in `~/.config/devcrate/config.toml` (user config only; `.devcrate.toml` may not set it) to turn forwarding off everywhere.
+
+devcrate forwards the SSH agent `$SSH_AUTH_SOCK` names. If your keys live in another SSH agent, such as 1Password's, set `ssh_agent` in `~/.config/devcrate/config.toml` (user config only) to forward that socket instead, on `up`, `devcrate ssh` and in the SSH config block (as `IdentityAgent`). A leading `~` expands to your home directory. `forward_agent = false` still turns forwarding off.
+
+```toml
+ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+```
 
 ### VS Code
 

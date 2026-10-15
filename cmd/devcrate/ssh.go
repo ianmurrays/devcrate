@@ -58,6 +58,9 @@ func sshCmd(flags map[string]string, args []string) error {
 	tty := len(command) == 0 && term.IsTerminal(int(os.Stdin.Fd()))
 	if err == nil && flags["--container"] != "" {
 		command, err = env.containerCommand(client, command, tty)
+	} else if tty {
+		// An interactive VM session starts in the clone, or home if there is none.
+		command = []string{`cd /var/lib/devcrate/workspace 2>/dev/null; exec "$SHELL" -l`}
 	}
 	client.Close()
 	if err != nil {
@@ -80,6 +83,8 @@ func sshCmd(flags map[string]string, args []string) error {
 	argv := []string{"ssh", "-F", "/dev/null"}
 	if agentSock != "" {
 		argv = append(argv, "-A")
+		// ssh -A forwards $SSH_AUTH_SOCK, which ssh_agent may override.
+		os.Setenv("SSH_AUTH_SOCK", agentSock)
 	}
 	if tty {
 		argv = append(argv, "-t") // ssh would not allocate one for a command
@@ -254,6 +259,9 @@ func (e *environment) writeSSHConfig(res provider.Result) error {
 	}
 	if cfg.ForwardAgent == nil || *cfg.ForwardAgent {
 		block += "  ForwardAgent yes\n"
+		if cfg.SSHAgent != "" {
+			block += fmt.Sprintf("  IdentityAgent \"%s\"\n", sshPath(cfg.agentSock()))
+		}
 	}
 	if err := e.editSSHConfig(block); err != nil {
 		return err
