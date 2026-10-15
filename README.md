@@ -93,6 +93,23 @@ git -C ~/dotfiles pull -q
 ~/dotfiles/install.sh
 ```
 
+Install your Claude Code plugins from the user script too. devcrate does not install Claude Code itself, so install it in your devcontainer image or earlier in the script. List each plugin as `<name>@<marketplace>` (the id `claude plugin list` prints on your laptop) with its marketplace's GitHub repo:
+
+```sh
+# ~/.config/devcrate/setup.sh
+set -eu
+for p in "ponytail@ponytail DietrichGebert/ponytail" "commit-commands@claude-plugins-official anthropics/claude-plugins-official"; do
+	set -- $p
+	claude plugin list --json | grep -q "\"$1\"" || claude plugin install "${1%@*}" --marketplace "$2"
+done
+```
+
+`--marketplace` adds the marketplace first if it is missing. Limits:
+
+- Only marketplaces git can fetch on the Environment work. A `directory` marketplace (a path on your laptop) cannot be installed. A private repo needs git access to it there, through the forwarded SSH agent or a forwarded `GITHUB_TOKEN`.
+- On the VM the script runs as root, and root's home is lost on Stop, so the plugins are reinstalled on every `up`. With `setup_script_in_container = true` they are installed in the container's home, which survives a Stop but not a Rebuild.
+- Don't put `~/.claude/settings.json` in `forward_files` to copy your plugin list: a forwarded file is read-only, and Claude Code writes to its settings.
+
 All setup output, including both scripts', is also written to `/var/lib/devcrate/setup.log` on the volume (the latest `up` only): `devcrate ssh <name> -- cat /var/lib/devcrate/setup.log`.
 
 ## Credentials
