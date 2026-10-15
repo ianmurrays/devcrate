@@ -183,7 +183,7 @@ func up(flags map[string]string, args []string) error {
 	}
 
 	fmt.Println("waiting for SSH…")
-	client, err := env.dial(res, 3*time.Minute)
+	client, err := env.dialBooted(res, 3*time.Minute)
 	if err != nil {
 		return fmt.Errorf("connecting to %s: %w", env.Name, err)
 	}

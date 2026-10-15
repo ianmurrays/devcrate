@@ -2,7 +2,7 @@
 
 A local CLI that runs dev Environments on cloud VMs, stops them when idle, and connects to them over SSH. Run `devcrate up` in a local clone to get an Environment for that repo, and `devcrate status` to see its state (`ready`, `running`, `busy`, `stopped` or `missing`).
 
-Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH`, in `~/.config/devcrate/providers/` or next to the `devcrate` executable, that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`). devcrate ships with the DigitalOcean Provider.
+Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH`, in `~/.config/devcrate/providers/` or next to the `devcrate` executable, that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`). devcrate ships with the DigitalOcean and Vultr Providers.
 
 ## Install
 
@@ -11,6 +11,7 @@ devcrate is three kinds of file that must sit in the same directory (there is no
 - `devcrate`, the CLI you run.
 - `devcrate-agent-linux-amd64` and `devcrate-agent-linux-arm64`, the Agent that `up` pushes to the VM (the one matching the VM's CPU).
 - `devcrate-provider-digitalocean`, the DigitalOcean Provider (`providers/digitalocean/`).
+- `devcrate-provider-vultr`, the Vultr Provider (`providers/vultr/`).
 
 ### DigitalOcean
 
@@ -19,6 +20,14 @@ devcrate is three kinds of file that must sit in the same directory (there is no
 1. Install `doctl` and `jq`, create a full-access personal access token and run `doctl auth init`. The Provider uses whatever `doctl` is logged in to.
 2. Create a second token with only the `droplet: delete` scope and set it as `token` under `[providers.digitalocean]` in `~/.config/devcrate/config.toml`. The Agent uses it to destroy the droplet when the Environment is Idle (Self-stop). DigitalOcean cannot scope it to one droplet: it can delete every droplet in the team.
 3. Build a base snapshot with Docker and the devcontainer CLI using the README's Packer recipe, and set its ID as `image`. A snapshot is only in the region it was built in; copy it to another with `doctl compute image-action transfer <snapshot-id> --region <region> --wait`.
+
+### Vultr
+
+`providers/vultr/README.md` has the details. In short:
+
+1. Install `curl` and `jq`, create an API key and export it as `VULTR_API_KEY` (or have `vultr-cli` configured with it in `~/.vultr-cli.yaml`).
+2. Set `region` under `[providers.vultr]` in `~/.config/devcrate/config.toml`, to one with NVMe block storage. There is no default.
+3. Set `idle_timeout = 0` in the repo's `.devcrate.toml`: the Vultr Provider does not support Self-stop yet, so `up` fails with idle stop on. A stopped Environment's volume keeps billing until `delete`.
 
 Docker's images and build cache live on the volume and slowly fill it: free space with `devcrate ssh <name> -- docker system prune`.
 
@@ -53,7 +62,7 @@ region = "nyc3" # used when .devcrate.toml has no region
 
 The Provider gets its `[providers.<name>]` table overlaid with every other `.devcrate.toml` key, unchanged, and validates them itself.
 
-`idle_timeout` is a duration such as `"30m"` or `"2h"`. Idle stop needs the Provider's Self-stop credential (DigitalOcean: `token`); without it `up` fails before creating anything, unless `idle_timeout = 0`.
+`idle_timeout` is a duration such as `"30m"` or `"2h"`. Idle stop needs the Provider's Self-stop credential (DigitalOcean: `token`; Vultr: not supported yet); without it `up` fails before creating anything, unless `idle_timeout = 0`.
 
 Environment names use only `a-z`, `0-9` and `-`, and are at most 32 characters. If two repos derive the same name, `up` aborts setup in the second one and asks you to set `name` in its `.devcrate.toml`.
 
@@ -192,7 +201,7 @@ go build -o dist/devcrate ./cmd/devcrate
 for arch in amd64 arm64; do
 	CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o dist/devcrate-agent-linux-$arch ./cmd/devcrate-agent
 done
-cp providers/digitalocean/devcrate-provider-digitalocean dist/
+cp providers/digitalocean/devcrate-provider-digitalocean providers/vultr/devcrate-provider-vultr dist/
 ```
 
 Then put `dist/` on your `PATH` (or symlink `dist/devcrate` into it: devcrate resolves symlinks to find the files next to it).

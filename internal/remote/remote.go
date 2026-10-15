@@ -119,6 +119,17 @@ func pin(knownHosts, alias string) ssh.HostKeyCallback {
 	}
 }
 
+// Pinned reports whether knownHosts holds a host key for alias.
+func Pinned(knownHosts, alias string) bool {
+	data, _ := os.ReadFile(knownHosts)
+	for _, line := range strings.Split(string(data), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == alias {
+			return true
+		}
+	}
+	return false
+}
+
 // Unpin removes alias's entries from knownHosts.
 func Unpin(knownHosts, alias string) error {
 	data, err := os.ReadFile(knownHosts)
