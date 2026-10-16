@@ -200,10 +200,11 @@ func up(flags map[string]string, args []string) error {
 		return fmt.Errorf("installing the Agent: %w", err)
 	}
 
-	// setup.sh runs the user's script from here.
+	// setup.sh runs the user's script from here. 0600: /run/devcrate is
+	// traversable by everyone (creds.sh).
 	push := "rm -f /run/devcrate/user-setup.sh"
 	if env.userScript != nil {
-		push = "umask 077 && mkdir -p /run/devcrate && cat > /run/devcrate/user-setup.sh"
+		push = "umask 077 && mkdir -p /run/devcrate && rm -f /run/devcrate/user-setup.sh && cat > /run/devcrate/user-setup.sh"
 	}
 	if err := remote.Run(client, push, bytes.NewReader(env.userScript), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("pushing ~/.config/devcrate/setup.sh: %w", err)

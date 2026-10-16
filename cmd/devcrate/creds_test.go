@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// archiveFiles returns the regular files of a credsArchive by name.
+// archiveFiles returns the entries of a credsArchive by name.
 func archiveFiles(t *testing.T, c *config) map[string]string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -105,9 +105,8 @@ func TestGitSigningKeyForwardsKeyAndConfig(t *testing.T) {
 	if got := files["git/signing_key"]; got != "PRIVATE" {
 		t.Errorf("git/signing_key = %q, want the key", got)
 	}
-	want := "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-keygen\n[user]\n\tsigningkey = /run/devcrate/creds/git/signing_key\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
-	if got := files["git/config"]; got != want {
-		t.Errorf("git/config = %q, want %q", got, want)
+	if got := files["git/config"]; got != signingGitConfig {
+		t.Errorf("git/config = %q, want %q", got, signingGitConfig)
 	}
 }
 

@@ -24,7 +24,7 @@ rm -rf "$data/files" "$data/git"
 mv "$new/files" "$new/git" "$new/names" "$new/env" "$data/"
 rmdir "$new"
 # Owned by the devcontainer's remoteUser (setup records its uid:gid), so it
-# can read them; still unreadable to anyone else. Root reads them regardless.
+# can read them; anyone else can read git/config only. Root reads them regardless.
 if [ -f /run/devcrate/creds-owner ]; then
 	chown -R "$(cat /run/devcrate/creds-owner)" "$data"
 fi

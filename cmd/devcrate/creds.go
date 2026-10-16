@@ -39,14 +39,15 @@ func pushCreds(client *ssh.Client) error {
 	return nil
 }
 
-// gitConfig is the git config fragment that signs with git/signing_key. The
+// signingGitConfig is the git config fragment that signs with git/signing_key.
+// The
 // system git config on the VM and in the devcontainer includes it (setup.sh),
 // so a missing fragment means unsigned commits, not failing ones.
-const gitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-keygen\n[user]\n\tsigningkey = /run/devcrate/creds/git/signing_key\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
+const signingGitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-keygen\n[user]\n\tsigningkey = /run/devcrate/creds/git/signing_key\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
 
 // credsArchive is a tar of env (sourceable exports), names (one forwarded
 // var per line), files/<path relative to $HOME> and git/ (the signing key and
-// gitConfig, or nothing).
+// signingGitConfig, or nothing).
 func (c *config) credsArchive() (*bytes.Buffer, error) {
 	var env, names strings.Builder
 	for _, name := range c.ForwardEnv {
@@ -131,15 +132,15 @@ func (c *config) credsArchive() (*bytes.Buffer, error) {
 			return nil, fmt.Errorf("git_signing_key: %w", err)
 		} else if err := add("git/signing_key", key); err != nil {
 			return nil, err
-		} else if err := addMode("git/config", 0o644, []byte(gitConfig)); err != nil {
+		} else if err := addMode("git/config", 0o644, []byte(signingGitConfig)); err != nil {
 			return nil, err
 		}
 	}
 	return &buf, tw.Close()
 }
 
-// homeRelative turns the user config's key's path (~/x, x relative to $HOME,
-// or an absolute path under $HOME) into a path relative to home.
+// homeRelative turns a path from the user config's key (~/x, x relative to
+// $HOME, or an absolute path under $HOME) into a path relative to home.
 func homeRelative(key, home, p string) (string, error) {
 	path := strings.TrimPrefix(p, "~/")
 	if !filepath.IsAbs(path) {
