@@ -290,7 +290,7 @@ Unit tests:
 go test ./...
 ```
 
-End-to-end tests drive the real `devcrate` binary against a test-only fake Provider (`e2e/fakeprovider`) whose "VM" is a privileged systemd container built from `e2e/vm/Dockerfile`. They need a running Docker daemon (Docker Desktop or OrbStack); the first run builds the VM image, which takes a few minutes.
+End-to-end tests drive the real `devcrate` binary against a test-only fake Provider (`e2e/fakeprovider`) whose "VM" is a privileged systemd container built from `e2e/vm/Dockerfile`. They need a running Docker daemon (Docker Desktop or OrbStack); the first run builds the VM image, which takes a few minutes. On Linux, the VM reaches the tests' servers on the host's loopback through `host.docker.internal`, so route the bridge gateway to loopback first, as CI does (`.github/workflows/ci.yml`).
 
 ```sh
 go test -tags e2e -timeout 20m ./e2e/
