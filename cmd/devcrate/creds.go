@@ -40,9 +40,8 @@ func pushCreds(client *ssh.Client) error {
 }
 
 // signingGitConfig is the git config fragment that signs with git/signing_key.
-// The
-// system git config on the VM and in the devcontainer includes it (setup.sh),
-// so a missing fragment means unsigned commits, not failing ones.
+// The system git config on the VM and in the devcontainer includes it
+// (setup.sh), so a missing fragment means unsigned commits, not failing ones.
 const signingGitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-keygen\n[user]\n\tsigningkey = /run/devcrate/creds/git/signing_key\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
 
 // credsArchive is a tar of env (sourceable exports), names (one forwarded
