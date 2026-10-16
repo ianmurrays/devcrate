@@ -296,6 +296,13 @@ End-to-end tests drive the real `devcrate` binary against a test-only fake Provi
 go test -tags e2e -timeout 20m ./e2e/
 ```
 
+On Linux, Docker routes `host.docker.internal` to the bridge gateway, not to the host's loopback where the tests' git server and registry mirror listen. Route it there first (CI does the same):
+
+```sh
+sudo sysctl -w net.ipv4.conf.docker0.route_localnet=1
+sudo iptables -t nat -I PREROUTING -i docker0 -d "$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')" -p tcp -j DNAT --to-destination 127.0.0.1
+```
+
 If a run is killed before it cleans up, remove what it left behind with the commands below (they also remove the VMs of any e2e run still in progress):
 
 ```sh
