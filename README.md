@@ -139,7 +139,28 @@ CLAUDE_CODE_OAUTH_TOKEN = "op read 'op://Private/Claude Code token/credential'"
 
 A command that fails skips its var with a warning. A var cannot be in both `forward_env` and `[forward_env_commands]`.
 
-`forward_env`, `forward_env_commands`, `forward_files`, `forward_agent` and `ssh_agent` are rejected in `.devcrate.toml`: a repo cannot ask for your secrets.
+`forward_env`, `forward_env_commands`, `forward_files`, `forward_agent`, `ssh_agent` and `git_signing_key` are rejected in `.devcrate.toml`: a repo cannot ask for your secrets.
+
+### Commit signing
+
+To sign every commit and tag made on an Environment, including those made while nobody is connected, give devcrate a dedicated SSH signing key:
+
+```sh
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/devcrate_signing
+```
+
+Add `~/.ssh/devcrate_signing.pub` on GitHub as a **Signing key**, not an Authentication key, then set:
+
+```toml
+# ~/.config/devcrate/config.toml
+git_signing_key = "~/.ssh/devcrate_signing"
+```
+
+On every `up` and `devcrate ssh`, devcrate copies the private key to the VM's tmpfs, with the other forwarded secrets, and the system git config on the VM and in the devcontainer includes signing settings that use it. The devcontainer image needs `git` and `ssh-keygen`. A missing key is skipped with a warning, and commits are then unsigned.
+
+- The private key leaves your laptop, and anything running as root on the VM can read it (`docs/adr/0006-commits-are-signed-with-a-tmpfs-key.md`, `docs/adr/0005-repos-are-trusted-with-their-vm.md`). As a signing key it can sign as you but cannot push.
+- System git config has lower precedence than global config, so signing settings in a forwarded `~/.gitconfig` override these.
+- The commit identity (`user.name`, `user.email`) still comes from your own config. GitHub shows a commit as Verified only if its email is verified on the account that owns the key.
 
 ### Build secrets
 

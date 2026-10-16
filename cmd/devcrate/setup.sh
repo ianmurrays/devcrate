@@ -156,6 +156,13 @@ git config --system url."git@github.com:".insteadOf https://github.com/
 grep -qs '^github.com ssh-ed25519 ' /etc/ssh/ssh_known_hosts ||
 	echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >>/etc/ssh/ssh_known_hosts
 
+# Commit signing (ADR 0006): the system git config includes the fragment
+# devcrate pushes with git_signing_key. git skips a missing include, so
+# without the key commits are unsigned. Added once, keeping other settings.
+add_signing_include='git config --system --get-all include.path | grep -qxF /run/devcrate/creds/git/config ||
+	git config --system --add include.path /run/devcrate/creds/git/config'
+sh -c "$add_signing_include"
+
 # remote.origin.url, not `remote get-url`: get-url applies the rewrite above.
 if [ ! -d "$workspace/.git" ]; then
 	git clone "$origin" "$workspace"
@@ -229,6 +236,7 @@ else
 	fi
 	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
 	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh" 9>&-
+	docker exec -u 0 "$id" sh -c "if command -v git >/dev/null; then $add_signing_include; fi" 9>&-
 	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null 9>&-
 fi
 

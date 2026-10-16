@@ -9,6 +9,7 @@ func TestParseRejectsUserOnlyKeys(t *testing.T) {
 		`forward_files = ["~/.npmrc"]`,
 		`forward_agent = true`,
 		`ssh_agent = "/tmp/agent.sock"`,
+		`git_signing_key = "~/.ssh/devcrate_signing"`,
 	} {
 		if _, err := parse("https://github.com/a/b.git", toml); err == nil {
 			t.Errorf("%q was accepted, want an error", toml)

@@ -203,7 +203,7 @@ func up(flags map[string]string, args []string) error {
 	// setup.sh runs the user's script from here.
 	push := "rm -f /run/devcrate/user-setup.sh"
 	if env.userScript != nil {
-		push = "mkdir -p /run/devcrate && cat > /run/devcrate/user-setup.sh"
+		push = "umask 077 && mkdir -p /run/devcrate && cat > /run/devcrate/user-setup.sh"
 	}
 	if err := remote.Run(client, push, bytes.NewReader(env.userScript), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("pushing ~/.config/devcrate/setup.sh: %w", err)
@@ -556,6 +556,9 @@ type config struct {
 	// SSHAgent is the agent socket to forward instead of $SSH_AUTH_SOCK,
 	// e.g. 1Password's.
 	SSHAgent string `toml:"ssh_agent"`
+	// GitSigningKey is a private SSH key under $HOME that signs every commit
+	// and tag on the Environment (ADR 0006).
+	GitSigningKey string `toml:"git_signing_key"`
 }
 
 // agentSock is the laptop's SSH agent socket to forward, or "" when the user
