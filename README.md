@@ -122,8 +122,10 @@ List the env vars and files every Environment should get in your user config:
 ```toml
 # ~/.config/devcrate/config.toml
 forward_env = ["GITHUB_TOKEN", "NPM_TOKEN"]
-forward_files = ["~/.npmrc", "~/.gitconfig"] # files under your home directory
+forward_files = ["~/.npmrc"] # files under your home directory
 ```
+
+Don't forward a `~/.gitconfig` that names laptop-only paths, such as `user.signingkey` or `gpg.ssh.program`: those paths don't exist on the Environment, so `git commit` fails there.
 
 On every `up` and `devcrate ssh`, devcrate reads their current values on your laptop and writes them to the VM's tmpfs (`/run/devcrate/creds/env` and `/run/devcrate/creds/files/<path>`, mode 0600), never to the volume. So a rotated token takes effect on your next connection, and nothing is left after a Stop. Login shells on the VM and in the devcontainer source the env vars, `~/<path>` is a symlink to each file, and `/run/devcrate/creds` is mounted read-only into the devcontainer. Lifecycle hooks such as `postCreateCommand` and both setup scripts see the env vars too. An env var that is unset on your laptop, or a file that is missing, is skipped with a warning.
 
