@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -239,9 +240,9 @@ func (e *Env) DevcrateIn(dir string, args ...string) Result {
 	return e.Wait(cmd, args)
 }
 
-// DevcrateTTY runs devcrate on a pseudo-terminal via BSD script(1) (macOS),
-// typing input once the terminal shows prompt. The terminal's output, prompt
-// included, is in Stdout.
+// DevcrateTTY runs devcrate on a pseudo-terminal via script(1) (BSD on macOS,
+// util-linux on Linux), typing input once the terminal shows prompt. The
+// terminal's output, prompt included, is in Stdout.
 func (e *Env) DevcrateTTY(prompt, input string, args ...string) Result {
 	e.t.Helper()
 	cmd := e.Command(args...)
@@ -249,7 +250,17 @@ func (e *Env) DevcrateTTY(prompt, input string, args ...string) Result {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	cmd.Path, cmd.Args = script, append([]string{"script", "-q", "/dev/null"}, cmd.Args...)
+	if runtime.GOOS == "linux" {
+		// util-linux takes the command as one shell string.
+		quoted := make([]string, len(cmd.Args))
+		for i, a := range cmd.Args {
+			quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		}
+		cmd.Args = []string{"script", "-qec", strings.Join(quoted, " "), "/dev/null"}
+	} else {
+		cmd.Args = append([]string{"script", "-q", "/dev/null"}, cmd.Args...)
+	}
+	cmd.Path = script
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		e.t.Fatal(err)
