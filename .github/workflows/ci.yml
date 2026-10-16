@@ -7,7 +7,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only PRs: every push to main gets a full run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -20,7 +21,8 @@ jobs:
       # The Provider tests skip without jq (curl is already on the runner).
       - run: sudo apt-get update && sudo apt-get install -y jq
       - run: go vet ./...
-      - run: go test ./...
+      # -v so a skipped Provider test shows in the log.
+      - run: go test -v ./...
       - name: Build the Agent
         run: |
           mkdir -p dist

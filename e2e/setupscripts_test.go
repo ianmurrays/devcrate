@@ -87,7 +87,7 @@ func TestFailingSetupScriptFailsUpUntilFixed(t *testing.T) {
 			}
 			r := e.Devcrate("ssh", e.Name, "--", "cat /var/lib/devcrate/setup.log")
 			// Setup's own output comes first; the version is whatever the VM image installed.
-			if !strings.HasPrefix(r.Stdout, "Docker ") {
+			if first, _, _ := strings.Cut(r.Stdout, "\n"); !strings.HasPrefix(first, "Docker ") || !strings.HasSuffix(first, " is installed") {
 				t.Errorf("setup.log = %q, want setup's Docker check first", r.Stdout)
 			}
 			wantLines(t, r.Stdout, "out-before-failing")

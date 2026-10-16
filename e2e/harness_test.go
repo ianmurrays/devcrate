@@ -71,7 +71,8 @@ func run(m *testing.M) int {
 	}
 
 	// Docker Desktop and OrbStack both route host.docker.internal to the
-	// laptop's loopback, so the VM can clone from this server. It speaks smart
+	// laptop's loopback, so the VM can clone from this server (on Linux, CI
+	// routes it there, see .github/workflows/ci.yml). It speaks smart
 	// HTTP, which shallow and filtered clones (`up <git-url>`) need.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	must(err)
@@ -254,7 +255,7 @@ func (e *Env) DevcrateTTY(prompt, input string, args ...string) Result {
 		// util-linux takes the command as one shell string.
 		quoted := make([]string, len(cmd.Args))
 		for i, a := range cmd.Args {
-			quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+			quoted[i] = shellQuote(a)
 		}
 		cmd.Args = []string{"script", "-qec", strings.Join(quoted, " "), "/dev/null"}
 	} else {
