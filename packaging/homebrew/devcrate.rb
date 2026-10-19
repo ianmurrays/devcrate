@@ -11,6 +11,8 @@ class Devcrate < Formula
   depends_on "go" => :build
   depends_on "jq"
 
+  PROVIDERS = %w[digitalocean vultr].freeze
+
   def install
     # devcrate finds the Agents and Providers next to its resolved executable,
     # so everything goes in libexec and only devcrate is linked into bin.
@@ -20,7 +22,7 @@ class Devcrate < Formula
         system "go", "build", *std_go_args(output: libexec/"devcrate-agent-linux-#{arch}"), "./cmd/devcrate-agent"
       end
     end
-    libexec.install "providers/digitalocean/devcrate-provider-digitalocean", "providers/vultr/devcrate-provider-vultr"
+    PROVIDERS.each { |p| libexec.install "providers/#{p}/devcrate-provider-#{p}" }
     bin.install_symlink libexec/"devcrate"
   end
 
@@ -33,10 +35,8 @@ class Devcrate < Formula
   end
 
   test do
-    %w[devcrate-agent-linux-amd64 devcrate-agent-linux-arm64
-       devcrate-provider-digitalocean devcrate-provider-vultr].each do |f|
-      assert_path_exists libexec/f
-    end
+    %w[devcrate-agent-linux-amd64 devcrate-agent-linux-arm64].each { |f| assert_path_exists libexec/f }
+    PROVIDERS.each { |p| assert_path_exists libexec/"devcrate-provider-#{p}" }
     assert_equal "[]", shell_output("#{bin}/devcrate list --json").strip
   end
 end

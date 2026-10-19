@@ -18,3 +18,6 @@ jobs:
           create-branch: false
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # Downloads the tarball to compute sha256; COMMITTER_TOKEN can only see
+          # the tap, and devcrate is private.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
