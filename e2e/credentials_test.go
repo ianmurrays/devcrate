@@ -14,7 +14,7 @@ import (
 )
 
 func TestRepoCannotAskForCredentials(t *testing.T) {
-	for _, key := range []string{"forward_env", "forward_files", "forward_agent"} {
+	for _, key := range []string{"forward_env", "forward_files", "forward_agent", "git_signing_key"} {
 		t.Run(key, func(t *testing.T) {
 			t.Parallel()
 			e := NewEnv(t)
@@ -168,9 +168,9 @@ func TestNonRootRemoteUserReadsForwardedCredentials(t *testing.T) {
 	if out, _ := e.VM("stat -c '%a %u' /run/devcrate/ssh-agent/agent.sock"); out != "600 1000\n" {
 		t.Errorf("agent relay socket mode and owner = %q, want 600 owned by the remoteUser's uid 1000", out)
 	}
-	// Readable by its owner only, on the VM too.
-	if out, _ := e.VM("stat -c '%a %u' /run/devcrate/creds /run/devcrate/creds/env /run/devcrate/creds/files/.config/e2e/token"); out != "700 1000\n600 1000\n600 1000\n" {
-		t.Errorf("creds modes and owners = %q, want 0700/0600 owned by the remoteUser's uid 1000", out)
+	// Readable by its owner only, on the VM too; the directory is traversable.
+	if out, _ := e.VM("stat -c '%a %u' /run/devcrate/creds /run/devcrate/creds/env /run/devcrate/creds/files/.config/e2e/token"); out != "711 1000\n600 1000\n600 1000\n" {
+		t.Errorf("creds modes and owners = %q, want 0711/0600 owned by the remoteUser's uid 1000", out)
 	}
 
 	// A push from devcrate ssh keeps them readable by the remoteUser.

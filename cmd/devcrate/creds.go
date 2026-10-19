@@ -22,7 +22,8 @@ import (
 var credsScript string
 
 // pushCreds writes the current laptop values of the user config's forward_env,
-// forward_env_commands and forward_files to the VM's tmpfs, replacing what was there.
+// forward_env_commands, forward_files and git_signing_key to the VM's tmpfs,
+// replacing what was there.
 func pushCreds(client *ssh.Client) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -38,8 +39,14 @@ func pushCreds(client *ssh.Client) error {
 	return nil
 }
 
+// signingGitConfig is the git config fragment that signs with git/signing_key.
+// The system git config on the VM and in the devcontainer includes it
+// (setup.sh), so a missing fragment means unsigned commits, not failing ones.
+const signingGitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-keygen\n[user]\n\tsigningkey = /run/devcrate/creds/git/signing_key\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
+
 // credsArchive is a tar of env (sourceable exports), names (one forwarded
-// var per line) and files/<path relative to $HOME>.
+// var per line), files/<path relative to $HOME> and git/ (the signing key and
+// signingGitConfig, or nothing).
 func (c *config) credsArchive() (*bytes.Buffer, error) {
 	var env, names strings.Builder
 	for _, name := range c.ForwardEnv {
@@ -71,13 +78,14 @@ func (c *config) credsArchive() (*bytes.Buffer, error) {
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	add := func(name string, data []byte) error {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data))}); err != nil {
+	addMode := func(name string, mode int64, data []byte) error {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: mode, Size: int64(len(data))}); err != nil {
 			return err
 		}
 		_, err := tw.Write(data)
 		return err
 	}
+	add := func(name string, data []byte) error { return addMode(name, 0o600, data) }
 	if err := add("env", []byte(env.String())); err != nil {
 		return nil, err
 	}
@@ -92,7 +100,7 @@ func (c *config) credsArchive() (*bytes.Buffer, error) {
 		return nil, err
 	}
 	for _, p := range c.ForwardFiles {
-		rel, err := homeRelative(home, p)
+		rel, err := homeRelative("forward_files", home, p)
 		if err != nil {
 			return nil, err
 		}
@@ -108,19 +116,38 @@ func (c *config) credsArchive() (*bytes.Buffer, error) {
 			return nil, err
 		}
 	}
+	if err := tw.WriteHeader(&tar.Header{Name: "git/", Mode: 0o711, Typeflag: tar.TypeDir}); err != nil {
+		return nil, err
+	}
+	if c.GitSigningKey != "" {
+		rel, err := homeRelative("git_signing_key", home, c.GitSigningKey)
+		if err != nil {
+			return nil, err
+		}
+		key, err := os.ReadFile(filepath.Join(home, rel))
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "devcrate: git_signing_key: %s does not exist here; commits will not be signed\n", c.GitSigningKey)
+		} else if err != nil {
+			return nil, fmt.Errorf("git_signing_key: %w", err)
+		} else if err := add("git/signing_key", key); err != nil {
+			return nil, err
+		} else if err := addMode("git/config", 0o644, []byte(signingGitConfig)); err != nil {
+			return nil, err
+		}
+	}
 	return &buf, tw.Close()
 }
 
-// homeRelative turns a forward_files entry (~/x, x relative to $HOME, or an
-// absolute path under $HOME) into a path relative to home.
-func homeRelative(home, p string) (string, error) {
+// homeRelative turns a path from the user config's key (~/x, x relative to
+// $HOME, or an absolute path under $HOME) into a path relative to home.
+func homeRelative(key, home, p string) (string, error) {
 	path := strings.TrimPrefix(p, "~/")
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(home, path)
 	}
 	rel, err := filepath.Rel(home, filepath.Clean(path))
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", fmt.Errorf("forward_files: %s is not a file under your home directory", p)
+		return "", fmt.Errorf("%s: %s is not a file under your home directory", key, p)
 	}
 	return rel, nil
 }
