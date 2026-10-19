@@ -11,7 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 )
+
+// validName keeps a Provider name a plain word: with a slash, exec.LookPath
+// would take devcrate-provider-<name> as a path, so a repo's .devcrate.toml
+// could run a file from the repo.
+var validName = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // Request is the JSON object every verb receives on stdin.
 type Request struct {
@@ -66,6 +72,9 @@ var executableDir = func() (string, error) {
 // <configDir>/providers, then next to the devcrate executable (the Providers
 // devcrate ships with).
 func Find(name, configDir string) (*Provider, error) {
+	if !validName.MatchString(name) {
+		return nil, fmt.Errorf("invalid provider name %q: use only lowercase letters, digits and -", name)
+	}
 	exe := "devcrate-provider-" + name
 	if path, err := exec.LookPath(exe); err == nil {
 		return &Provider{Name: name, Path: path, Stderr: os.Stderr}, nil

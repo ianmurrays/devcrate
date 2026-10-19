@@ -155,6 +155,24 @@ func TestFindLooksNextToDevcrateLast(t *testing.T) {
 	}
 }
 
+// A name with a slash is a path to exec.LookPath, so a repo's .devcrate.toml
+// could otherwise run a file from the repo itself.
+func TestFindRejectsNamesThatAreNotPlainWords(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "devcrate-provider-x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "devcrate-provider-x", "evil"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	for _, name := range []string{"x/evil", "../x", "X", "a b", ""} {
+		if p, err := Find(name, t.TempDir()); err == nil || !strings.Contains(err.Error(), "invalid provider name") {
+			t.Errorf("Find(%q) = %v, %v; want an invalid provider name error", name, p, err)
+		}
+	}
+}
+
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
