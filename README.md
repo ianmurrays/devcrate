@@ -6,7 +6,14 @@ Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PA
 
 ## Install
 
-devcrate is three kinds of file that must sit in the same directory (there is no package yet; see [Build](#build)):
+```sh
+brew tap ianmurrays/devcrate
+brew install devcrate
+```
+
+Homebrew builds devcrate from source and installs `jq`, which both Providers need. To build it yourself instead, see [Build](#build).
+
+devcrate is four kinds of file that must sit in the same directory (Homebrew puts them in its `libexec` and links only `devcrate` into `bin`):
 
 - `devcrate`, the CLI you run.
 - `devcrate-agent-linux-amd64` and `devcrate-agent-linux-arm64`, the Agent that `up` pushes to the VM (the one matching the VM's CPU).
@@ -304,6 +311,10 @@ cp providers/digitalocean/devcrate-provider-digitalocean providers/vultr/devcrat
 ```
 
 Then put `dist/` on your `PATH` (or symlink `dist/devcrate` into it: devcrate resolves symlinks to find the files next to it).
+
+## Release
+
+Push a `vX.Y.Z` tag: `git tag v0.2.0 && git push origin v0.2.0`. `.github/workflows/release.yml` then commits the tag's tarball `url` and `sha256` to `Formula/devcrate.rb` in [ianmurrays/homebrew-devcrate](https://github.com/ianmurrays/homebrew-devcrate), using the `HOMEBREW_TAP_TOKEN` secret. The tap's formula is the live one; `packaging/homebrew/devcrate.rb` is the seed it started from.
 
 ## Test
 

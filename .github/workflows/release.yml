@@ -1,0 +1,20 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  homebrew:
+    runs-on: ubuntu-latest
+    steps:
+      # Commits the new url and sha256 straight to the tap's Formula/devcrate.rb.
+      - uses: mislav/bump-homebrew-formula-action@v4
+        with:
+          formula-name: devcrate
+          homebrew-tap: ianmurrays/homebrew-devcrate
+          download-url: https://github.com/ianmurrays/devcrate/archive/refs/tags/${{ github.ref_name }}.tar.gz
+          create-pullrequest: false
+          create-branch: false
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
