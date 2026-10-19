@@ -300,6 +300,22 @@ devcrate-agent keep-alive 2h         # on the VM, e.g. from a script
 
 The duration is Go-style (`90s`, `30m`, `2h30m`). The hold ends on its own: the Environment then stops after a further `idle_timeout` with nobody connected. Each call replaces the previous hold, so a shorter one cuts it short. The hold lives in tmpfs (`/run/devcrate/keep-alive`), so a reboot or Stop drops it. `devcrate keep-alive` never starts a stopped Environment and fails like `devcrate ssh` does.
 
+## Coding-assistant skill
+
+`skills/devcrate/SKILL.md` teaches a coding assistant such as Claude Code to set up and use an Environment for a repo. Install it in Claude Code:
+
+```sh
+claude plugin install devcrate --marketplace ianmurrays/devcrate
+```
+
+Or in any coding assistant that `npx skills` supports (Claude Code, Codex, Cursor, Gemini CLI, OpenCode and others):
+
+```sh
+npx skills add ianmurrays/devcrate
+```
+
+The skill leaves `~/.config/devcrate/config.toml` to you, and runs `delete` only when you ask for it.
+
 ## Build
 
 Requires Go 1.25.
