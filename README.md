@@ -4,6 +4,8 @@ A local CLI that runs dev Environments on cloud VMs, stops them when idle, and c
 
 Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PATH`, in `~/.config/devcrate/providers/` or next to the `devcrate` executable, that speak JSON over stdin and stdout (see `docs/adr/0001-providers-are-external-executables.md`). devcrate ships with the DigitalOcean and Vultr Providers.
 
+> devcrate was built with AI assistance: most of the code, tests and docs were written by Claude (Anthropic) through Claude Code, then reviewed and tested by the maintainer.
+
 ## Install
 
 ```sh
