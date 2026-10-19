@@ -8,10 +8,11 @@ Clouds sit behind Providers: executables named `devcrate-provider-<name>` on `PA
 
 ```sh
 brew tap ianmurrays/devcrate
+brew trust ianmurrays/devcrate
 brew install devcrate
 ```
 
-Homebrew builds devcrate from source and installs `jq`, which both Providers need. To build it yourself instead, see [Build](#build).
+Current Homebrew refuses formulae from a tap until you `brew trust` it. Homebrew builds devcrate from source and installs `jq`, which both Providers need. To build it yourself instead, see [Build](#build).
 
 devcrate is four kinds of file that must sit in the same directory (Homebrew puts them in its `libexec` and links only `devcrate` into `bin`):
 
