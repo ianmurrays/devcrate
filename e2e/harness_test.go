@@ -105,13 +105,21 @@ const mirrorName = "devcrate-e2e-registry-mirror"
 // as seen from inside a fake VM.
 func ensureMirror() string {
 	// Fails with a name conflict when another process created it first. The
-	// image is ECR's copy of Docker's library one, so starting the mirror
-	// never needs Hub quota.
-	exec.Command("docker", "run", "-d", "--name", mirrorName,
-		"--label", "devcrate.e2e.mirror=1", "--restart", "unless-stopped",
-		"-p", "127.0.0.1::5000",
-		"-e", "REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io",
-		"public.ecr.aws/docker/library/registry:2").Run()
+	// images are copies of Docker's library one, so starting the mirror never
+	// needs Hub quota. ECR Public rate-limits anonymous pulls per IP, which
+	// shared CI runners hit, so Google's Hub mirror is the fallback.
+	var runOut []byte
+	for _, image := range []string{"public.ecr.aws/docker/library/registry:2", "mirror.gcr.io/library/registry:2"} {
+		out, err := exec.Command("docker", "run", "-d", "--name", mirrorName,
+			"--label", "devcrate.e2e.mirror=1", "--restart", "unless-stopped",
+			"-p", "127.0.0.1::5000",
+			"-e", "REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io",
+			image).CombinedOutput()
+		runOut = append(runOut, out...)
+		if err == nil || bytes.Contains(out, []byte("Conflict")) {
+			break
+		}
+	}
 	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		exec.Command("docker", "start", mirrorName).Run()
 		out, err := exec.Command("docker", "port", mirrorName, "5000/tcp").Output()
@@ -126,7 +134,7 @@ func ensureMirror() string {
 			}
 		}
 		if time.Now().After(deadline) {
-			panic(fmt.Sprintf("registry mirror %s did not come up: docker port: %v %s", mirrorName, err, out))
+			panic(fmt.Sprintf("registry mirror %s did not come up: docker port: %v %s\ndocker run: %s", mirrorName, err, out, runOut))
 		}
 	}
 }
