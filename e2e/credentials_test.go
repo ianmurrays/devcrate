@@ -9,12 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 func TestRepoCannotAskForCredentials(t *testing.T) {
-	for _, key := range []string{"forward_env", "forward_files", "forward_agent", "git_signing_key"} {
+	for _, key := range []string{"forward_env", "forward_files", "forward_repo_files", "forward_agent", "git_signing_key"} {
 		t.Run(key, func(t *testing.T) {
 			t.Parallel()
 			e := NewEnv(t)
@@ -252,4 +253,65 @@ func sha256hex(s string) string {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func TestForwardedRepoFilesInTheClone(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	e.UserConfig("[providers.fake]\n[forward_repo_files]\n" + e.Name + " = [\"config/credentials/test.key\", \"config/missing.key\"]\n")
+	key := filepath.Join(e.Dir, "config", "credentials", "test.key")
+	must(os.MkdirAll(filepath.Dir(key), 0o755))
+	must(os.WriteFile(key, []byte("first"), 0o600))
+	r := e.Devcrate("up")
+	if r.Code != 0 {
+		t.Fatalf("up exit %d", r.Code)
+	}
+	if want := "devcrate: forward_repo_files: config/missing.key does not exist here; not forwarding it"; !strings.Contains(r.Stderr, want) {
+		t.Errorf("up stderr %q, want %q", r.Stderr, want)
+	}
+	// A real file, not a link to the tmpfs: containers that mount the clone
+	// without /run/devcrate/creds read it too (ADR 0007).
+	stat := "stat -c '%F %a %U' config/credentials/test.key && cat config/credentials/test.key"
+	if r := e.Devcrate("ssh", "--", stat); r.Stdout != "regular file 600 root\nfirst" {
+		t.Errorf("the clone's copy = %q exit %d, want a 0600 root file holding the laptop's", r.Stdout, r.Code)
+	}
+
+	// The laptop's version wins on the next devcrate ssh.
+	must(os.WriteFile(key, []byte("second"), 0o600))
+	if r := e.Devcrate("ssh", "--", "cat config/credentials/test.key"); r.Stdout != "second" {
+		t.Errorf("after rotating, the clone's copy = %q, want %q", r.Stdout, "second")
+	}
+
+	// Outside the laptop clone there is nothing to copy; the copy stays.
+	if r := e.DevcrateIn(t.TempDir(), "ssh", e.Name, "--", "cat config/credentials/test.key"); r.Stdout != "second" {
+		t.Errorf("ssh outside the repo, the clone's copy = %q exit %d, want %q", r.Stdout, r.Code, "second")
+	}
+
+	// It lives on the volume, so it survives a Stop, with no laptop copy to
+	// push again.
+	if r := e.Devcrate("stop"); r.Code != 0 {
+		t.Fatalf("stop exit %d", r.Code)
+	}
+	must(os.Remove(key))
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up after stop exit %d", r.Code)
+	}
+	if out, _ := e.VM("cat /var/lib/devcrate/workspace/config/credentials/test.key"); out != "second" {
+		t.Errorf("after stop and up, the clone's copy = %q, want %q", out, "second")
+	}
+}
+
+func TestForwardedRepoFilesStayInTheRepo(t *testing.T) {
+	for _, path := range []string{"../escape", "/etc/passwd", ".git/config"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			e := NewEnv(t)
+			e.UserConfig("[forward_repo_files]\n" + e.Name + " = [" + strconv.Quote(path) + "]\n")
+			r := e.Devcrate("up")
+			want := "forward_repo_files: " + path + " is not a path inside the repo"
+			if r.Code != 1 || !strings.Contains(r.Stderr, want) {
+				t.Errorf("up = exit %d stderr %q, want exit 1 with %q", r.Code, r.Stderr, want)
+			}
+		})
+	}
 }

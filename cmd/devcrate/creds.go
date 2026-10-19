@@ -19,21 +19,21 @@ import (
 )
 
 //go:embed creds.sh
-var credsScript string
+var credsSh string
 
 // pushCreds writes the current laptop values of the user config's forward_env,
 // forward_env_commands, forward_files and git_signing_key to the VM's tmpfs,
-// replacing what was there.
-func pushCreds(client *ssh.Client) error {
+// replacing what was there, and env's forward_repo_files to its clone.
+func pushCreds(client *ssh.Client, env *environment) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	archive, err := cfg.credsArchive()
+	archive, err := cfg.credsArchive(env.Name, env.root)
 	if err != nil {
 		return err
 	}
-	if err := remote.Run(client, "sh -c "+shellQuote(credsScript), archive, os.Stdout, os.Stderr); err != nil {
+	if err := remote.Run(client, "sh -c "+shellQuote(repoFilesSh+credsSh), archive, os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("forwarding credentials: %w", err)
 	}
 	return nil
@@ -45,9 +45,11 @@ func pushCreds(client *ssh.Client) error {
 const signingGitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-keygen\n[user]\n\tsigningkey = /run/devcrate/creds/git/signing_key\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
 
 // credsArchive is a tar of env (sourceable exports), names (one forwarded
-// var per line), files/<path relative to $HOME> and git/ (the signing key and
-// signingGitConfig, or nothing).
-func (c *config) credsArchive() (*bytes.Buffer, error) {
+// var per line), files/<path relative to $HOME>, git/ (the signing key and
+// signingGitConfig, or nothing) and repo/<path in the repo>: the Environment
+// name's forward_repo_files from the laptop clone at root, or nothing when
+// root is "".
+func (c *config) credsArchive(name, root string) (*bytes.Buffer, error) {
 	var env, names strings.Builder
 	for _, name := range c.ForwardEnv {
 		if !envName.MatchString(name) {
@@ -135,7 +137,35 @@ func (c *config) credsArchive() (*bytes.Buffer, error) {
 			return nil, err
 		}
 	}
+	if err := tw.WriteHeader(&tar.Header{Name: "repo/", Mode: 0o700, Typeflag: tar.TypeDir}); err != nil {
+		return nil, err
+	}
+	if root != "" {
+		for _, p := range c.ForwardRepoFiles[name] {
+			rel := filepath.Clean(p) // checked by loadConfig
+			data, err := os.ReadFile(filepath.Join(root, rel))
+			if errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "devcrate: forward_repo_files: %s does not exist here; not forwarding it\n", p)
+				continue
+			} else if err != nil {
+				return nil, fmt.Errorf("forward_repo_files: %w", err)
+			}
+			if err := add("repo/"+filepath.ToSlash(rel), data); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return &buf, tw.Close()
+}
+
+// checkRepoPath fails unless p, an entry of forward_repo_files, is a relative
+// path inside the repo and outside .git.
+func checkRepoPath(p string) error {
+	rel := filepath.Clean(p)
+	if filepath.IsAbs(rel) || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || rel == ".git" || strings.HasPrefix(rel, ".git/") {
+		return fmt.Errorf("forward_repo_files: %s is not a path inside the repo", p)
+	}
+	return nil
 }
 
 // homeRelative turns a path from the user config's key (~/x, x relative to
