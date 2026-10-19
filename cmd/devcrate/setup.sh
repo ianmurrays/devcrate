@@ -170,6 +170,8 @@ elif [ "$(git -C "$workspace" config --get remote.origin.url)" != "$origin" ]; t
 	echo "devcrate: this Environment holds a clone of $(git -C "$workspace" config --get remote.origin.url), not $origin: set name in .devcrate.toml to give this repo its own Environment" >&2
 	exit 1
 fi
+# Before setup_script and devcontainer up, which may need them.
+copy_repo_files
 
 # Forwarded env vars, pushed to tmpfs by devcrate just before setup. Both
 # setup scripts see them, and a Dockerfile's `--secret id=NAME` reads them

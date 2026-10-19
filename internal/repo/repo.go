@@ -19,6 +19,7 @@ import (
 // Context is what `up` needs to know about the repo it runs in.
 type Context struct {
 	Origin   string         // clone URL
+	Root     string         // the local clone's top directory; "" from FromURL
 	Name     string         // Environment name: `name` from .devcrate.toml, else the repo name from Origin
 	Provider string         // `provider` from .devcrate.toml, "" when unset
 	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
@@ -68,7 +69,12 @@ func Load(dir string) (*Context, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	return parse(origin, string(data))
+	c, err := parse(origin, string(data))
+	if err != nil {
+		return nil, err
+	}
+	c.Root = root
+	return c, nil
 }
 
 // FromURL reads .devcrate.toml from the default branch of the repo at url,
@@ -102,7 +108,7 @@ func parse(origin, devcrateToml string) (*Context, error) {
 		return nil, fmt.Errorf(".devcrate.toml: %w", err)
 	}
 	// Which secrets leave the laptop is the user's call, never the repo's (ADR 0005).
-	for _, key := range []string{"forward_env", "forward_env_commands", "forward_files", "forward_agent", "ssh_agent", "git_signing_key"} {
+	for _, key := range []string{"forward_env", "forward_env_commands", "forward_files", "forward_repo_files", "forward_agent", "ssh_agent", "git_signing_key"} {
 		if _, ok := c.Options[key]; ok {
 			return nil, fmt.Errorf(".devcrate.toml: %s can only be set in your user config (~/.config/devcrate/config.toml), so a repo cannot ask for your secrets", key)
 		}

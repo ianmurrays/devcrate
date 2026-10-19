@@ -1,5 +1,6 @@
 # devcrate credential push: runs on the VM as root on every `up` and `ssh`,
-# with a tar of env, names, files/ and git/ on stdin. Everything stays on tmpfs.
+# with a tar of env, names, files/, git/ and repo/ on stdin. Everything but
+# the repo/ copies in the clone (copy_repo_files) stays on tmpfs.
 set -eu
 umask 077
 creds=/run/devcrate/creds
@@ -20,8 +21,8 @@ fi
 new=$(mktemp -d /run/devcrate/.creds-new.XXXXXX)
 tar -x --no-same-owner -C "$new"
 # Swap the contents, not the directory: bind mounts keep pointing at it.
-rm -rf "$data/files" "$data/git"
-mv "$new/files" "$new/git" "$new/names" "$new/env" "$data/"
+rm -rf "$data/files" "$data/git" "$data/repo"
+mv "$new/files" "$new/git" "$new/repo" "$new/names" "$new/env" "$data/"
 rmdir "$new"
 # Owned by the devcontainer's remoteUser (setup records its uid:gid), so it
 # can read them; anyone else can read git/config only. Root reads them regardless.
@@ -37,3 +38,4 @@ find . -type f | while IFS= read -r path; do
 	mkdir -p "$HOME/$(dirname "$path")"
 	ln -sfn "$creds/files/$path" "$HOME/$path"
 done
+copy_repo_files

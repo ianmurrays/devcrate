@@ -24,6 +24,10 @@ func TestSSHRunsCommandAsRoot(t *testing.T) {
 	if r := e.Devcrate("ssh", "--", "exit", "7"); r.Code != 7 {
 		t.Errorf("ssh -- exit 7 exit %d, want 7", r.Code)
 	}
+	// It runs in the clone, like the interactive shell.
+	if r := e.Devcrate("ssh", "--", "pwd"); r.Stdout != "/var/lib/devcrate/workspace\n" {
+		t.Errorf("ssh -- pwd = %q exit %d, want the clone", r.Stdout, r.Code)
+	}
 }
 
 func TestSSHOnStoppedEnvironmentFails(t *testing.T) {

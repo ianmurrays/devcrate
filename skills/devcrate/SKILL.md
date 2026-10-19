@@ -25,7 +25,7 @@ devcrate runs an **Environment** for a repo: a cloud VM with a persistent disk, 
 
 ## The user config is the human's
 
-`~/.config/devcrate/config.toml` holds Provider tokens and decides which secrets leave the laptop (`forward_env`, `forward_env_commands`, `forward_files`, `forward_agent`, `ssh_agent`, `git_signing_key`). Edit only repo files. When a task needs a user-config change, show the human the exact TOML to add and let them apply it. `.devcrate.toml` is committed, so secrets, Provider tokens included, belong only in the user config. See [Credentials](https://github.com/ianmurrays/devcrate#credentials).
+`~/.config/devcrate/config.toml` holds Provider tokens and decides which secrets leave the laptop (`forward_env`, `forward_env_commands`, `forward_files`, `forward_repo_files`, `forward_agent`, `ssh_agent`, `git_signing_key`). Edit only repo files. When a task needs a user-config change, show the human the exact TOML to add and let them apply it. `.devcrate.toml` is committed, so secrets, Provider tokens included, belong only in the user config. See [Credentials](https://github.com/ianmurrays/devcrate#credentials).
 
 ## Gotchas
 
@@ -33,6 +33,7 @@ devcrate runs an **Environment** for a repo: a cloud VM with a persistent disk, 
 - **Setup scripts run on every `up`**, as root, so make them idempotent: check before installing, never append to a file twice.
 - **The VM's clone** is `/var/lib/devcrate/workspace`. A quick devcontainer fix can be made there directly, then pushed from there, so the laptop and the VM do not diverge.
 - **Rebuild**: `up` recreates the devcontainer only when its build inputs change. After editing a lifecycle command such as `postCreateCommand`, run `devcrate up --rebuild` ([Rebuilding](https://github.com/ianmurrays/devcrate#rebuilding-the-devcontainer)).
+- **Gitignored secrets in the working tree**, such as Rails' `config/credentials/*.key`, are missing from the VM's clone. Ask the human to list them under `[forward_repo_files]` ([Files in the clone](https://github.com/ianmurrays/devcrate#files-in-the-clone)).
 - **Forwarded env vars are set in login shells only.** Wrap a one-off command that needs them: `devcrate ssh <name> -- 'bash -lc "gh auth status"'`.
 - **Vultr** has no Self-stop yet: set `idle_timeout = 0` in `.devcrate.toml`, or `up` fails.
 - **Long work with nobody connected** gets Stopped once Idle. Hold it first with `devcrate keep-alive <name> 2h` ([Keep-alive](https://github.com/ianmurrays/devcrate#keep-alive)).

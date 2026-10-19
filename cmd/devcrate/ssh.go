@@ -51,7 +51,7 @@ func sshCmd(flags map[string]string, args []string) error {
 		return fmt.Errorf("connecting to %s: %w", env.Name, err)
 	}
 	// Every connection carries the laptop's current values.
-	err = pushCreds(client)
+	err = pushCreds(client, env)
 	if err == nil {
 		err = printAgentError(client, false)
 	}
@@ -61,6 +61,9 @@ func sshCmd(flags map[string]string, args []string) error {
 	} else if tty {
 		// An interactive VM session starts in the clone, or home if there is none.
 		command = []string{`cd /var/lib/devcrate/workspace 2>/dev/null; exec "$SHELL" -l`}
+	} else if len(command) > 0 {
+		// So does a command; sshd joins the words for the login shell.
+		command = append([]string{"cd /var/lib/devcrate/workspace 2>/dev/null;"}, command...)
 	}
 	client.Close()
 	if err != nil {

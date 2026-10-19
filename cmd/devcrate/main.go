@@ -33,8 +33,10 @@ var (
 	setupSh string
 	//go:embed userdata.sh
 	userDataSh string
+	//go:embed repofiles.sh
+	repoFilesSh string
 	// Both put the volume's state in place with volume.sh's function.
-	setupScript = volumeScript + setupSh
+	setupScript = volumeScript + repoFilesSh + setupSh
 	userData    = volumeScript + userDataSh
 )
 
@@ -192,7 +194,7 @@ func up(flags map[string]string, args []string) error {
 	if err := env.writeSSHConfig(res); err != nil {
 		return err
 	}
-	if err := pushCreds(client); err != nil {
+	if err := pushCreds(client, env); err != nil {
 		return err
 	}
 
@@ -367,6 +369,7 @@ func list(flags map[string]string, _ []string) error {
 type environment struct {
 	Name     string
 	origin   string         // clone URL; empty when resolved outside a repo
+	root     string         // the laptop clone; empty without one
 	options  map[string]any // passed to the Provider unchanged
 	provider *provider.Provider
 	key      *remote.Key
@@ -441,7 +444,7 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 		return nil, err
 	}
 	return &environment{
-		Name: ctx.Name, origin: ctx.Origin, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
+		Name: ctx.Name, origin: ctx.Origin, root: ctx.Root, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
 		setupScript: ctx.SetupScript, userScript: userScript, userScriptInContainer: cfg.SetupScriptInContainer,
 		idleTimeout: idleTimeout,
 	}, nil
@@ -499,6 +502,9 @@ func resolve(providerName string, args []string) (*environment, error) {
 			return nil, err
 		}
 		e := &environment{Name: name, options: candidates[p], provider: prov, key: key, searched: searched}
+		if repoErr == nil && name == env.Name {
+			e.root = env.root // the current repo's Environment, by name
+		}
 		if providerName != "" {
 			return e, nil
 		}
@@ -547,7 +553,10 @@ type config struct {
 	// stdout is the forwarded value.
 	ForwardEnvCommands map[string]string `toml:"forward_env_commands"`
 	ForwardFiles       []string          `toml:"forward_files"`
-	IdleTimeout        any               `toml:"idle_timeout"` // see repo.ParseIdleTimeout
+	// ForwardRepoFiles maps an Environment name to paths in its repo,
+	// copied from the laptop clone into the VM's clone (ADR 0007).
+	ForwardRepoFiles map[string][]string `toml:"forward_repo_files"`
+	IdleTimeout      any                 `toml:"idle_timeout"` // see repo.ParseIdleTimeout
 	// SetupScriptInContainer runs ~/.config/devcrate/setup.sh in the
 	// devcontainer instead of on the VM.
 	SetupScriptInContainer bool `toml:"setup_script_in_container"`
@@ -601,6 +610,13 @@ func loadConfig() (*config, error) {
 	for _, name := range cfg.ForwardEnv {
 		if _, ok := cfg.ForwardEnvCommands[name]; ok {
 			return nil, fmt.Errorf("%s: %s is in both forward_env and forward_env_commands; keep one", path, name)
+		}
+	}
+	for _, paths := range cfg.ForwardRepoFiles {
+		for _, p := range paths {
+			if err := checkRepoPath(p); err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
 		}
 	}
 	return cfg, nil

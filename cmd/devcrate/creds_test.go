@@ -13,7 +13,7 @@ import (
 func archiveFiles(t *testing.T, c *config) map[string]string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	buf, err := c.credsArchive()
+	buf, err := c.credsArchive("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestForwardEnvCommandsConflictWithForwardEnv(t *testing.T) {
 func TestForwardEnvCommandsRejectBadNames(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	c := &config{ForwardEnvCommands: map[string]string{"A-B": "echo x"}}
-	if _, err := c.credsArchive(); err == nil {
+	if _, err := c.credsArchive("", ""); err == nil {
 		t.Error("A-B was accepted, want an error")
 	}
 }
@@ -89,7 +89,7 @@ func TestGitSigningKeyForwardsKeyAndConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	buf, err := c.credsArchive()
+	buf, err := c.credsArchive("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestMissingGitSigningKeyForwardsNoConfig(t *testing.T) {
 
 func TestGitSigningKeyOutsideHomeIsRejected(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if _, err := (&config{GitSigningKey: "/etc/ssh/key"}).credsArchive(); err == nil || !strings.Contains(err.Error(), "git_signing_key") {
+	if _, err := (&config{GitSigningKey: "/etc/ssh/key"}).credsArchive("", ""); err == nil || !strings.Contains(err.Error(), "git_signing_key") {
 		t.Errorf("err = %v, want a git_signing_key error", err)
 	}
 }

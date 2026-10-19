@@ -149,7 +149,21 @@ CLAUDE_CODE_OAUTH_TOKEN = "op read 'op://Private/Claude Code token/credential'"
 
 A command that fails skips its var with a warning. A var cannot be in both `forward_env` and `[forward_env_commands]`.
 
-`forward_env`, `forward_env_commands`, `forward_files`, `forward_agent`, `ssh_agent` and `git_signing_key` are rejected in `.devcrate.toml`: a repo cannot ask for your secrets.
+### Files in the clone
+
+Some secrets must sit in the repo's working tree, ignored by git, such as Rails' `config/credentials/*.key`. List them per Environment name, as paths relative to the repo root:
+
+```toml
+# ~/.config/devcrate/config.toml
+[forward_repo_files]
+bookster = ["config/credentials/test.key", "config/credentials/development.key"]
+```
+
+On every `up` and `devcrate ssh` run in your local clone, devcrate copies each file to the same path in the VM's clone (`/var/lib/devcrate/workspace`), mode 0600, owned by the clone's owner. `up` copies them before `setup_script` and `devcontainer up`. A file missing from your clone is skipped with a warning. Run outside your clone, devcrate copies nothing and leaves the VM's copies as they are.
+
+Unlike the other forwarded secrets, these are real files on the volume: containers that mount the clone, such as docker compose services, can read them without `/run/devcrate/creds`. So they survive a Stop, and only Delete removes them. Removing a path from the list does not remove its copy (`docs/adr/0007-repo-files-are-written-to-the-volume.md`).
+
+`forward_env`, `forward_env_commands`, `forward_files`, `forward_repo_files`, `forward_agent`, `ssh_agent` and `git_signing_key` are rejected in `.devcrate.toml`: a repo cannot ask for your secrets.
 
 ### Commit signing
 
