@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Bumps action versions, including SHA pins like the one in release.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
