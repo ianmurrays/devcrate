@@ -1,0 +1,14 @@
+{
+  "name": "devcrate",
+  "description": "Agent skills for devcrate.",
+  "owner": {
+    "name": "Ian Murray"
+  },
+  "plugins": [
+    {
+      "name": "devcrate",
+      "source": "./",
+      "description": "Skill for agents to set up and use devcrate Environments."
+    }
+  ]
+}
