@@ -141,13 +141,27 @@ func (c *config) credsArchive(name, root string) (*bytes.Buffer, error) {
 		return nil, err
 	}
 	if root != "" {
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return nil, err
+		}
 		for _, p := range c.ForwardRepoFiles[name] {
 			rel := filepath.Clean(p) // checked by loadConfig
-			data, err := os.ReadFile(filepath.Join(root, rel))
+			// Links resolved, so a repo cannot point a listed path at a
+			// laptop file outside it (ADR 0005).
+			path, err := filepath.EvalSymlinks(filepath.Join(root, rel))
 			if errors.Is(err, os.ErrNotExist) {
 				fmt.Fprintf(os.Stderr, "devcrate: forward_repo_files: %s does not exist here; not forwarding it\n", p)
 				continue
 			} else if err != nil {
+				return nil, fmt.Errorf("forward_repo_files: %w", err)
+			}
+			if !inside(realRoot, path) {
+				fmt.Fprintf(os.Stderr, "devcrate: forward_repo_files: %s is a link out of the repo; not forwarding it\n", p)
+				continue
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
 				return nil, fmt.Errorf("forward_repo_files: %w", err)
 			}
 			if err := add("repo/"+filepath.ToSlash(rel), data); err != nil {
@@ -156,6 +170,12 @@ func (c *config) credsArchive(name, root string) (*bytes.Buffer, error) {
 		}
 	}
 	return &buf, tw.Close()
+}
+
+// inside reports whether path is dir or under it.
+func inside(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
 // checkRepoPath fails unless p, an entry of forward_repo_files, is a relative

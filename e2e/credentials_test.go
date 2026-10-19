@@ -258,16 +258,30 @@ func shellQuote(s string) string {
 func TestForwardedRepoFilesInTheClone(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
-	e.UserConfig("[providers.fake]\n[forward_repo_files]\n" + e.Name + " = [\"config/credentials/test.key\", \"config/missing.key\"]\n")
+	e.UserConfig("[providers.fake]\n[forward_repo_files]\n" + e.Name + " = [\"config/credentials/test.key\", \"config/missing.key\", \"config/link.key\"]\n")
 	key := filepath.Join(e.Dir, "config", "credentials", "test.key")
 	must(os.MkdirAll(filepath.Dir(key), 0o755))
 	must(os.WriteFile(key, []byte("first"), 0o600))
+	// A link in the repo to a laptop file outside it, as a repo could commit.
+	outside := filepath.Join(e.Home, "laptop-secret")
+	must(os.WriteFile(outside, []byte("laptop secret"), 0o600))
+	must(os.Symlink(outside, filepath.Join(e.Dir, "config", "link.key")))
 	r := e.Devcrate("up")
 	if r.Code != 0 {
 		t.Fatalf("up exit %d", r.Code)
 	}
 	if want := "devcrate: forward_repo_files: config/missing.key does not exist here; not forwarding it"; !strings.Contains(r.Stderr, want) {
 		t.Errorf("up stderr %q, want %q", r.Stderr, want)
+	}
+	if want := "devcrate: forward_repo_files: config/link.key is a link out of the repo; not forwarding it"; !strings.Contains(r.Stderr, want) {
+		t.Errorf("up stderr %q, want %q", r.Stderr, want)
+	}
+	if out, code := e.VM("grep -rlF 'laptop secret' /run /var/lib/devcrate"); code != 1 {
+		t.Errorf("a file outside the repo reached the VM (grep exit %d): %s", code, out)
+	}
+	// The first up copies it after cloning, with no devcrate ssh yet.
+	if out, _ := e.VM("cat /var/lib/devcrate/workspace/config/credentials/test.key"); out != "first" {
+		t.Errorf("after the first up, the clone's copy = %q, want %q", out, "first")
 	}
 	// A real file, not a link to the tmpfs: containers that mount the clone
 	// without /run/devcrate/creds read it too (ADR 0007).

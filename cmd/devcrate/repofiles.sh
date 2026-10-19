@@ -11,7 +11,9 @@ copy_repo_files() {
 	(cd "$repo_files" && find . -type f) | while IFS= read -r repo_file; do
 		repo_file=${repo_file#./}
 		(umask 022 && mkdir -p "$repo_clone/$(dirname "$repo_file")")
-		# Removed first, so a link at the path is replaced, not followed.
+		# Removed first, so a link at the path is replaced, not followed. A
+		# linked parent directory is still followed: the repo is trusted with
+		# root here anyway (ADR 0005).
 		rm -f "$repo_clone/$repo_file"
 		(umask 077 && cp "$repo_files/$repo_file" "$repo_clone/$repo_file")
 		chown "$repo_owner" "$repo_clone/$repo_file"
