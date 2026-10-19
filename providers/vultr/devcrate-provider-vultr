@@ -38,17 +38,22 @@ api_url=${VULTR_API_URL:-https://api.vultr.com/v2}
 poll=${DEVCRATE_VULTR_POLL:-5}
 
 body=$(mktemp)
-trap 'rm -f "$body"' EXIT
+# The Authorization header, written once the key is known. It goes to curl as
+# a 0600 file, and request bodies go on stdin, so neither is in curl's argv
+# (which other local users can read with ps).
+auth=$(mktemp)
+trap 'rm -f "$body" "$auth"' EXIT
 
 # api METHOD PATH [JSON] calls the API and prints the response body. On an
 # error status it fails with the API's own message.
 api() {
 	m=$1 p=$2 d=${3:-}
-	set -- -sS -o "$body" -w '%{http_code}' -X "$m" -H "Authorization: Bearer $key" -H "Content-Type: application/json"
+	set -- -sS -o "$body" -w '%{http_code}' -X "$m" -H "@$auth" -H "Content-Type: application/json"
 	if [ -n "$d" ]; then
-		set -- "$@" --data "$d"
+		code=$(printf '%s' "$d" | curl "$@" --data-binary @- "$api_url$p") || die "$m $p: curl failed"
+	else
+		code=$(curl "$@" "$api_url$p") || die "$m $p: curl failed"
 	fi
-	code=$(curl "$@" "$api_url$p") || die "$m $p: curl failed"
 	case $code in
 	2??) cat "$body" ;;
 	*)
@@ -342,6 +347,7 @@ if [ -z "$key" ] && [ -f "$HOME/.vultr-cli.yaml" ]; then
 	key=$(sed -n "s/^api-key:[[:space:]]*[\"']\{0,1\}\([^\"'[:space:]]*\).*/\1/p" "$HOME/.vultr-cli.yaml" | head -n 1)
 fi
 [ -n "$key" ] || die "no API key: set VULTR_API_KEY, or api-key in ~/.vultr-cli.yaml (see the Provider's README.md)"
+printf 'Authorization: Bearer %s\n' "$key" >"$auth"
 
 case $verb in
 up) up ;;

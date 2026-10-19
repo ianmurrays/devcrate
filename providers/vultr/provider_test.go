@@ -398,6 +398,33 @@ func TestAPIKeyFallsBackToVultrCLIConfig(t *testing.T) {
 	}
 }
 
+// Other local users can read a process's argv with ps, so the API key and
+// request bodies (one holds the service user's password) must not be in it.
+func TestCurlArgvHoldsNoSecrets(t *testing.T) {
+	f := newFixture(t)
+	curl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Skip("no curl")
+	}
+	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "argv")
+	wrapper := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>" + log + "\nexec " + curl + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.path = bin + ":" + f.path
+	f.ok("up", "argv", opts, nil)
+
+	argv, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{apiKey, "password"} {
+		if strings.Contains(string(argv), secret) {
+			t.Errorf("curl argv contains %q:\n%s", secret, argv)
+		}
+	}
+}
+
 func TestUpRegionErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
