@@ -40,6 +40,10 @@ _Avoid_: Lock, pin
 A Stop initiated by the Agent from inside the Environment, using a credential pushed to the VM.
 _Avoid_: Auto-shutdown
 
+**Base image**:
+A Provider's disk image of an Environment's root disk with setup already applied, which a repo's new VMs boot from so setup has less to do.
+_Avoid_: Snapshot, image, template
+
 **Rebuild**:
 Recreating an Environment's devcontainer from its configuration, discarding the old container but keeping cached image layers.
 _Avoid_: Reset, recreate
