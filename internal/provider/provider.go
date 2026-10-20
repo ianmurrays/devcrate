@@ -31,6 +31,9 @@ type Request struct {
 	// Check (save-image only) asks the Provider to validate that it can
 	// save, changing nothing.
 	Check bool `json:"check,omitempty"`
+	// Delete (save-image only) asks the Provider to delete BaseName's Base
+	// images instead, touching no Environment.
+	Delete bool `json:"delete,omitempty"`
 }
 
 // State is an Environment's state as a Provider reports it.
@@ -52,6 +55,15 @@ type Result struct {
 	// SelfStopEnv (from `up` only) is the environment the self-stop script
 	// runs with on the VM: the Self-stop credential.
 	SelfStopEnv map[string]string `json:"self_stop_env,omitempty"`
+	// BaseImage (from `status` only) is BaseName's Base image that `up`
+	// boots from, if any.
+	BaseImage *BaseImage `json:"base_image,omitempty"`
+}
+
+// BaseImage is a Base image as a Provider reports it.
+type BaseImage struct {
+	ID      string `json:"id"`
+	Created string `json:"created"` // as the Provider formats it
 }
 
 // Provider is one discovered devcrate-provider-<name> executable.

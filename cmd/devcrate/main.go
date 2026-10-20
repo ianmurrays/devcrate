@@ -43,7 +43,7 @@ var (
 	userData    = volumeScript + userDataSh
 )
 
-const usage = "usage: devcrate up [--rebuild] [--name <name>] [git-url] | stop [name] | save-image [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
+const usage = "usage: devcrate up [--rebuild] [--name <name>] [git-url] | stop [name] | save-image [--delete] [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -68,7 +68,7 @@ func run(args []string) error {
 	case "stop":
 		cmd = stop
 	case "save-image":
-		cmd = saveImage
+		cmd, allowed = saveImage, append(allowed, "--delete")
 	case "delete":
 		cmd, allowed = del, append(allowed, "--yes")
 	case "status":
@@ -285,7 +285,7 @@ func stop(flags map[string]string, args []string) error {
 }
 
 // saveImage saves a Ready Environment's root disk as its repo's Base image,
-// leaving it Stopped (ADR 0009).
+// leaving it Stopped (ADR 0009). With --delete it deletes the Base image.
 func saveImage(flags map[string]string, args []string) error {
 	env, err := resolve(flags["--provider"], args)
 	if err != nil {
@@ -293,6 +293,18 @@ func saveImage(flags map[string]string, args []string) error {
 	}
 	if env.provider == nil {
 		return env.missing()
+	}
+	if flags["--delete"] != "" {
+		// ponytail: the base name comes from the repo context, so a worktree
+		// Environment's bare name outside its clone deletes nothing; read it
+		// from the volume if that case matters.
+		req := env.request()
+		req.Delete = true
+		if err := env.provider.SaveImage(req); err != nil {
+			return err
+		}
+		fmt.Printf("deleted the Base image of %s\n", req.BaseName)
+		return nil
 	}
 	unlock, err := lock(env.Name)
 	if err != nil {
@@ -373,19 +385,21 @@ func del(flags map[string]string, args []string) error {
 	return nil
 }
 
-// status prints one state word and succeeds for every state.
+// status prints one state word, then the Base image if any, and succeeds
+// for every state.
 func status(flags map[string]string, args []string) error {
 	env, err := resolve(flags["--provider"], args)
 	if err != nil {
 		return err
 	}
 	state := "missing"
+	var base *provider.BaseImage
 	if env.provider != nil {
 		res, err := env.provider.Status(env.request())
 		if err != nil {
 			return err
 		}
-		state = string(res.State)
+		state, base = string(res.State), res.BaseImage
 		switch res.State {
 		case provider.NotFound:
 			state = "missing"
@@ -397,9 +411,16 @@ func status(flags map[string]string, args []string) error {
 		}
 	}
 	if flags["--json"] != "" {
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"name": env.Name, "state": state})
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Name      string              `json:"name"`
+			State     string              `json:"state"`
+			BaseImage *provider.BaseImage `json:"base_image,omitempty"`
+		}{env.Name, state, base})
 	}
 	fmt.Println(state)
+	if base != nil {
+		fmt.Printf("base image: %s (created %s)\n", base.ID, base.Created)
+	}
 	return nil
 }
 

@@ -109,7 +109,7 @@ func TestSaveImageThenUpBootsFromTheBaseImage(t *testing.T) {
 	if r := e.Devcrate("save-image"); r.Code != 0 {
 		t.Fatalf("save-image exit %d", r.Code)
 	}
-	if r := e.Devcrate("status"); r.Stdout != "stopped\n" {
+	if r := e.Devcrate("status"); !strings.HasPrefix(r.Stdout, "stopped\n") {
 		t.Errorf("status after save-image = %q, want stopped", r.Stdout)
 	}
 	if !e.VolumeExists() {
