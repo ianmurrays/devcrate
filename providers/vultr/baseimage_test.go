@@ -69,7 +69,7 @@ func TestAFailedSnapshotLeavesTheOldBaseImage(t *testing.T) {
 	}
 }
 
-func TestASaveDeletesEveryOlderBaseImageButNotANewerOne(t *testing.T) {
+func TestASaveDeletesEveryOlderBaseImage(t *testing.T) {
 	f := newFixture(t)
 	f.ok("up", "api", opts, nil)
 	older1 := f.api.addSnapshot(label("api"), "complete")
