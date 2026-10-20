@@ -1,10 +1,11 @@
 # devcrate setup (sent after volume.sh): runs on the VM inside `up`'s SSH
 # session as
-# `sh -s -- <origin> <devcontainer> <setup_script> <in_container> <rebuild>`,
+# `sh -s -- <origin> <devcontainer> <setup_script> <in_container> <rebuild> <branch>`,
 # where <devcontainer> is false for a VM-only Environment, <setup_script> is
 # the repo's script (a path in the repo, or empty), <in_container> is true to
-# run the user's script in the devcontainer and <rebuild> is true for
-# `up --rebuild`. devcrate pushes the user's script
+# run the user's script in the devcontainer, <rebuild> is true for
+# `up --rebuild` and <branch> is the laptop checkout's branch for a new clone
+# ("HEAD" when detached, empty for `up <git-url>`). devcrate pushes the user's script
 # to /run/devcrate/user-setup.sh first, if there is one. Any failure exits
 # non-zero without the Ready marker, which is written last.
 set -eu
@@ -13,6 +14,7 @@ devcontainer=$2
 setup_script=$3
 in_container=$4
 rebuild=$5
+branch=$6
 volume=/var/lib/devcrate
 workspace=$volume/workspace
 # The devcontainer CLI lives on the root disk, like Docker: a snapshot image
@@ -164,8 +166,19 @@ add_signing_include='git config --system --get-all include.path | grep -qxF /run
 sh -c "$add_signing_include"
 
 # remote.origin.url, not `remote get-url`: get-url applies the rewrite above.
+# Only a new clone checks out the branch: an existing one is never switched,
+# so work on the VM is never disturbed.
 if [ ! -d "$workspace/.git" ]; then
 	git clone "$origin" "$workspace"
+	if [ "$branch" = HEAD ]; then
+		echo "devcrate: warning: the laptop checkout has a detached HEAD, so the clone is on the default branch" >&2
+	elif [ -n "$branch" ]; then
+		if git -C "$workspace" rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null; then
+			git -C "$workspace" checkout -q "$branch"
+		else
+			echo "devcrate: warning: branch $branch is not on origin, so the clone is on the default branch: push it, then check it out on the VM" >&2
+		fi
+	fi
 elif [ "$(git -C "$workspace" config --get remote.origin.url)" != "$origin" ]; then
 	echo "devcrate: this Environment holds a clone of $(git -C "$workspace" config --get remote.origin.url), not $origin: set name in .devcrate.toml to give this repo its own Environment" >&2
 	exit 1
