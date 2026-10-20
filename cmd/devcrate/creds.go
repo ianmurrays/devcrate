@@ -29,7 +29,7 @@ func pushCreds(client *ssh.Client, env *environment) error {
 	if err != nil {
 		return err
 	}
-	archive, err := cfg.credsArchive(env.Name, env.root)
+	archive, err := cfg.credsArchive(env.Name, env.base, env.root)
 	if err != nil {
 		return err
 	}
@@ -47,9 +47,9 @@ const signingGitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-
 // credsArchive is a tar of env (sourceable exports), names (one forwarded
 // var per line), files/<path relative to $HOME>, git/ (the signing key and
 // signingGitConfig, or nothing) and repo/<path in the repo>: the Environment
-// name's forward_repo_files from the laptop clone at root, or nothing when
-// root is "".
-func (c *config) credsArchive(name, root string) (*bytes.Buffer, error) {
+// name's forward_repo_files, else base's, from the laptop clone at root, or
+// nothing when root is "".
+func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 	var env, names strings.Builder
 	for _, name := range c.ForwardEnv {
 		if !envName.MatchString(name) {
@@ -145,7 +145,11 @@ func (c *config) credsArchive(name, root string) (*bytes.Buffer, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, p := range c.ForwardRepoFiles[name] {
+		paths, ok := c.ForwardRepoFiles[name]
+		if !ok { // a linked worktree uses its repo's entry (ADR 0008)
+			paths = c.ForwardRepoFiles[base]
+		}
+		for _, p := range paths {
 			rel := filepath.Clean(p) // checked by loadConfig
 			// Links resolved, so a repo cannot point a listed path at a
 			// laptop file outside it (ADR 0005).

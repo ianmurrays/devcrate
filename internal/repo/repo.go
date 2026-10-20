@@ -21,6 +21,7 @@ type Context struct {
 	Origin   string         // clone URL
 	Root     string         // the local clone's top directory; "" from FromURL
 	Name     string         // Environment name: `name` from .devcrate.toml, else the repo name from Origin
+	Base     string         // Name without a linked worktree's suffix
 	Provider string         // `provider` from .devcrate.toml, "" when unset
 	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
 	// Devcontainer is `devcontainer` from .devcrate.toml, nil when unset.
@@ -74,6 +75,7 @@ func Load(dir string) (*Context, error) {
 		return nil, err
 	}
 	c.Root = root
+	c.Base = c.Name
 	if linked, err := isLinkedWorktree(dir); err != nil {
 		return nil, err
 	} else if linked {
