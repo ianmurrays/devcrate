@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type cloud struct {
@@ -20,7 +21,11 @@ type cloud struct {
 	Volumes  []*volume  `json:"volumes"`
 	SSHKeys  []*sshKey  `json:"ssh_keys"`
 	Tags     []string   `json:"tags"`
-	Calls    [][]string `json:"calls"`
+	// Snapshots are complete snapshots, as the API lists them: a snapshot
+	// is pending, and unlisted, until its action completes.
+	Snapshots []*snapshot `json:"snapshots"`
+	Deleted   []deletion  `json:"deleted"`
+	Calls     [][]string  `json:"calls"`
 	// UserData is what each droplet create sent, by droplet name.
 	UserData map[string]string `json:"user_data"`
 }
@@ -50,6 +55,21 @@ type volume struct {
 	SizeGiB  int                   `json:"size_gigabytes"`
 	Droplets []int                 `json:"droplet_ids"`
 	Tags     []string              `json:"tags"`
+}
+
+type snapshot struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Created    string   `json:"created_at"`
+	Regions    []string `json:"regions"`
+	ResourceID string   `json:"resource_id"`
+}
+
+// deletion is a deleted snapshot, and whether a newer complete one with its
+// name existed then.
+type deletion struct {
+	ID            string
+	NewerComplete bool
 }
 
 type sshKey struct {
@@ -216,6 +236,48 @@ func fakeDoctl(args []string) int {
 			}
 		}
 		printJSON([]map[string]any{{"status": "completed"}})
+	case strings.HasPrefix(cmd, "compute droplet-action power-off"),
+		strings.HasPrefix(cmd, "compute droplet-action snapshot"):
+		id, _ := strconv.Atoi(pos[3])
+		d := c.droplet(id)
+		if d == nil {
+			return doctlFail("droplet %d not found", id)
+		}
+		// Without --wait the action is still in progress: the droplet
+		// stays on and no snapshot is complete yet.
+		if f["wait"] == "" {
+			printJSON([]map[string]any{{"status": "in-progress"}})
+			return 0
+		}
+		if pos[2] == "power-off" {
+			d.Status = "off"
+		} else {
+			if d.Status != "off" {
+				return doctlFail("fake: snapshotting a droplet that is %s, not off", d.Status)
+			}
+			c.addSnapshot(f["snapshot-name"], d.Region, strconv.Itoa(id))
+			// $FAKE_SIBLING_SAVE: a sibling worktree's save, started
+			// later, completes while this one does.
+			if os.Getenv("FAKE_SIBLING_SAVE") != "" {
+				c.addSnapshot(f["snapshot-name"], d.Region, "sibling")
+			}
+		}
+		printJSON([]map[string]any{{"status": "completed"}})
+	case cmd == "compute snapshot list":
+		if f["resource"] != "droplet" {
+			return doctlFail("fake: snapshot list without --resource droplet")
+		}
+		printJSON(c.Snapshots)
+	case strings.HasPrefix(cmd, "compute snapshot delete"):
+		i := slices.IndexFunc(c.Snapshots, func(s *snapshot) bool { return s.ID == pos[3] })
+		if i < 0 {
+			return doctlFail("snapshot %s not found", pos[3])
+		}
+		s := c.Snapshots[i]
+		c.Deleted = append(c.Deleted, deletion{ID: s.ID, NewerComplete: slices.ContainsFunc(c.Snapshots, func(x *snapshot) bool {
+			return x.Name == s.Name && x.Created > s.Created
+		})})
+		c.Snapshots = slices.Delete(c.Snapshots, i, i+1)
 	case strings.HasPrefix(cmd, "compute tag get"):
 		if !slices.Contains(c.Tags, pos[3]) {
 			return doctlFail("tag %s not found", pos[3])
@@ -231,6 +293,25 @@ func fakeDoctl(args []string) int {
 		return doctlFail("fake doctl: unknown command %q", args)
 	}
 	return 0
+}
+
+// addSnapshot adds a complete snapshot. created_at grows with each new ID,
+// so it orders snapshots.
+func (c *cloud) addSnapshot(name, region, resourceID string) *snapshot {
+	n := c.id()
+	s := &snapshot{ID: strconv.Itoa(n), Name: name, Created: time.Unix(1700000000+int64(n), 0).UTC().Format(time.RFC3339),
+		Regions: []string{region}, ResourceID: resourceID}
+	c.Snapshots = append(c.Snapshots, s)
+	return s
+}
+
+func (c *cloud) droplet(id int) *droplet {
+	for _, d := range c.Droplets {
+		if d.ID == id {
+			return d
+		}
+	}
+	return nil
 }
 
 // deleteDroplet destroys a droplet; its volumes detach and survive.

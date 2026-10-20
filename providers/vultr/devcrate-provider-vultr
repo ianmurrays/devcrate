@@ -32,6 +32,7 @@ image=$(opt image "")
 volume_size=$(opt volume_size 50)
 
 name=$(printf '%s' "$req" | jq -r '.environment_id // ""')
+base_name=$(printf '%s' "$req" | jq -r '.base_name // ""')
 
 # The tests point these at a fake API and stop the waits from sleeping.
 api_url=${VULTR_API_URL:-https://api.vultr.com/v2}
@@ -77,6 +78,39 @@ retry() {
 	done
 }
 
+# wait_for MAX WANT WHAT CMD... runs CMD until it prints WANT, up to MAX
+# times $poll seconds apart, printing progress every 12th time, then fails.
+# Not in a condition, so set -e still stops it on an API error.
+wait_for() {
+	max=$1 want=$2 what=$3
+	shift 3
+	n=0
+	while :; do
+		got=$("$@")
+		[ "$got" != "$want" ] || return 0
+		n=$((n + 1))
+		[ "$n" -lt "$max" ] || die "$what: still $got after $max polls, $poll seconds apart"
+		[ $((n % 12)) -ne 0 ] || echo "vultr: $what ($got)" >&2
+		sleep "$poll"
+	done
+}
+
+# A Base image is a snapshot whose description is devcrate-base:<base_name>.
+base_label="devcrate-base:$base_name"
+
+# base_image prints base_name's newest complete Base image as JSON, or
+# nothing.
+base_image() {
+	[ -n "$base_name" ] || return 0
+	base_images | jq -c '[.[] | select(.status == "complete")][0] // empty'
+}
+
+# base_images prints base_name's Base images as a JSON array, newest first.
+base_images() {
+	out=$(api GET "/snapshots?per_page=500")
+	printf '%s' "$out" | jq -c --arg d "$base_label" '[.snapshots[] | select(.description == $d)] | sort_by(.date_created) | reverse'
+}
+
 # for_env NAME points the functions below at Environment NAME.
 for_env() {
 	res="devcrate-$1"
@@ -98,8 +132,20 @@ volume() {
 	printf '%s' "$out" | jq -c --arg l "$res" '[.blocks[] | select(.label == $l)][0] // empty'
 }
 
-# status prints the contract's status object.
+# status prints the contract's status object, with the Base image up boots
+# from.
 status() {
+	b=$(base_image)
+	env_status | jq -c --argjson b "${b:-null}" 'if $b then . + {base_image: {id: $b.id, created: $b.date_created}} else . end'
+}
+
+# state prints the Environment's state.
+state() {
+	s=$(env_status)
+	printf '%s' "$s" | jq -r .state
+}
+
+env_status() {
 	i=$(instances)
 	if [ "$(printf '%s' "$i" | jq length)" -gt 0 ]; then
 		printf '%s' "$i" | jq -c '.[0] |
@@ -140,9 +186,15 @@ ssh_key_id() {
 	echo "$id"
 }
 
-# source_image prints the instance's image as JSON: the snapshot in image, or
-# the newest x64 Ubuntu LTS.
+# source_image prints the instance's image as JSON: base_name's Base image,
+# the snapshot in image, or the newest x64 Ubuntu LTS. A snapshot can be
+# deployed in any region.
 source_image() {
+	b=$(base_image)
+	if [ -n "$b" ]; then
+		printf '%s' "$b" | jq -c '{snapshot_id: .id}'
+		return
+	fi
 	if [ -n "$image" ]; then
 		jq -nc --arg s "$image" '{snapshot_id: $s}'
 		return
@@ -208,14 +260,7 @@ up() {
 
 	# Wait for the instance (a new one, or one another up is creating) to
 	# be active and running with an IP, for up to 120 polls (10 minutes).
-	n=0
-	while :; do
-		s=$(status)
-		[ "$(printf '%s' "$s" | jq -r .state)" = running ] && break
-		n=$((n + 1))
-		[ "$n" -lt 120 ] || die "$res is not running after 120 polls, $poll seconds apart: $s"
-		sleep "$poll"
-	done
+	wait_for 120 running "waiting for $res to run" state
 
 	# Attach the volume live. It may still be detaching from the instance a
 	# Stop destroyed.
@@ -225,6 +270,7 @@ up() {
 	if [ "$(printf '%s' "$v" | jq -r .attached_to_instance)" != "$id" ]; then
 		retry POST "/blocks/$vol/attach" "$(jq -nc --arg i "$id" '{instance_id: $i, live: true}')"
 	fi
+	s=$(env_status)
 	printf '%s' "$s" | jq -c --arg k "$(self_stop_key "$id" "$(printf '%s' "$s" | jq -r .host)")" \
 		'. + {self_stop_env: {VULTR_API_KEY: $k}}'
 }
@@ -312,13 +358,55 @@ delete() {
 	fi
 }
 
+# snapshot_status prints snapshot $snap's status.
+snapshot_status() {
+	out=$(api GET "/snapshots/$snap")
+	printf '%s' "$out" | jq -r .snapshot.status
+}
+
+# save_image halts the instance, snapshots it as base_name's newest Base
+# image, waits for the snapshot to be complete, deletes every older Base
+# image, and destroys the instance; the volume stays. Should the snapshot
+# fail, the halted instance and the old Base image stay: up starts it again.
+save_image() {
+	[ -n "$base_name" ] || die "save-image: the request has no base_name"
+	if [ "$(printf '%s' "$req" | jq -r '.check // false')" = true ]; then
+		return # reaching here, an API key is set
+	fi
+	if [ "$(printf '%s' "$req" | jq -r '.delete // false')" = true ]; then
+		for s in $(base_images | jq -r '.[].id'); do
+			api DELETE "/snapshots/$s" >/dev/null
+		done
+		return
+	fi
+	id=$(instances | jq -r '.[0].id // empty')
+	[ -n "$id" ] || die "save-image: $name has no instance"
+	api POST "/instances/$id/halt" >/dev/null
+	wait_for 120 stopped "waiting for $res to halt" state
+
+	out=$(api POST /snapshots "$(jq -nc --arg i "$id" --arg d "$base_label" '{instance_id: $i, description: $d}')")
+	snap=$(printf '%s' "$out" | jq -r .snapshot.id)
+	echo "vultr: saving the Base image (this can take several minutes)" >&2
+	# Up to 720 polls (an hour).
+	wait_for 720 complete "saving the Base image" snapshot_status
+
+	# Not a newer one, which a sibling worktree's save may be making.
+	out=$(api GET "/snapshots/$snap")
+	created=$(printf '%s' "$out" | jq -r .snapshot.date_created)
+	old=$(base_images)
+	for s in $(printf '%s' "$old" | jq -r --arg s "$snap" --arg c "$created" '.[] | select(.id != $s and .date_created <= $c) | .id'); do
+		api DELETE "/snapshots/$s" >/dev/null
+	done
+	stop
+}
+
 # list: every Environment has a volume (a stopped one has nothing else).
 list() {
 	out=$(api GET "/blocks?per_page=500")
 	items='[]'
 	for env in $(printf '%s' "$out" | jq -r '.blocks[].label | select(startswith("devcrate-")) | ltrimstr("devcrate-")' | sort -u); do
 		for_env "$env"
-		s=$(status)
+		s=$(env_status)
 		items=$(printf '%s' "$items" | jq -c --arg e "$env" --argjson s "$s" '. + [{environment_id: $e, state: $s.state}]')
 	done
 	echo "$items"
@@ -354,6 +442,7 @@ up) up ;;
 status) status ;;
 stop) stop ;;
 delete) delete ;;
+save-image) save_image ;;
 list) list ;;
 *) die "unknown verb \"$verb\"" ;;
 esac

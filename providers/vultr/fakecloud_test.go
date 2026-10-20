@@ -6,6 +6,9 @@ package vultr
 // and a volume stays attached for a while after its instance is destroyed:
 // both last a few requests ("ticks") here.
 //
+// Snapshots are pending for a few requests, then complete. Destroying the
+// instance a pending snapshot is taken from loses the snapshot.
+//
 // It also keeps IAM: service users, their API keys and IP allowlists, and
 // policies. A service user's key is checked like the real one: only from an
 // allowlisted IP (the fake takes the caller's IP from from), and only for an
@@ -22,11 +25,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
-	pendingTicks = 2  // requests a new instance stays pending for
-	detachTicks  = 15 // requests a volume stays attached after its instance is destroyed
+	pendingTicks  = 2  // requests a new instance stays pending for
+	detachTicks   = 20 // requests a volume stays attached after its instance is destroyed
+	snapshotTicks = 4  // requests a new snapshot stays pending for
 )
 
 type fakeVultr struct {
@@ -43,9 +48,15 @@ type fakeVultr struct {
 	// userData is what each instance create sent, decoded, by label.
 	userData map[string]string
 	// inactive makes every create fail as an account flagged for inactivity does.
-	inactive bool
-	users    []*user
-	policies []*policy
+	inactive  bool
+	users     []*user
+	policies  []*policy
+	snapshots []*snapshot
+	// snapshotFails makes every snapshot create fail.
+	snapshotFails bool
+	// deleted records each snapshot delete: the snapshot, and whether a newer
+	// complete snapshot with the same description existed then.
+	deleted []deletion
 	// from is the IP every request comes from: the laptop's unless a test
 	// sets an instance's, as when the instance runs the self-stop script.
 	from string
@@ -117,6 +128,21 @@ type block struct {
 	Status     string `json:"status"`
 	AttachedTo string `json:"attached_to_instance"`
 	detaching  int
+}
+
+type snapshot struct {
+	ID          string `json:"id"`
+	DateCreated string `json:"date_created"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	instance    string // taken from
+	halted      bool   // whether that instance was halted then
+	pending     int
+}
+
+type deletion struct {
+	ID            string
+	NewerComplete bool
 }
 
 type sshKey struct {
@@ -229,6 +255,60 @@ func newFakeVultr(t *testing.T, key string) *fakeVultr {
 			return
 		}
 		i.PowerStatus = "running"
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("POST /v2/instances/{id}/halt", func(w http.ResponseWriter, r *http.Request) {
+		i := v.instance(r.PathValue("id"))
+		if i == nil {
+			fail(w, 404, "Invalid instance-id.")
+			return
+		}
+		i.PowerStatus = "stopped"
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("GET /v2/snapshots", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, map[string]any{"snapshots": orEmpty(v.snapshots)})
+	})
+	mux.HandleFunc("GET /v2/snapshots/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s := v.snapshot(r.PathValue("id"))
+		if s == nil {
+			fail(w, 404, "Invalid snapshot-id.")
+			return
+		}
+		reply(w, 200, map[string]any{"snapshot": s})
+	})
+	mux.HandleFunc("POST /v2/snapshots", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			InstanceID  string `json:"instance_id"`
+			Description string
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		i := v.instance(body.InstanceID)
+		switch {
+		case i == nil:
+			fail(w, 404, "Invalid instance-id.")
+		case v.snapshotFails:
+			fail(w, 400, "Unable to create snapshot: the server is locked.")
+		default:
+			s := v.addSnapshot(body.Description, "pending")
+			s.instance, s.halted, s.pending = i.ID, i.PowerStatus == "stopped", snapshotTicks
+			reply(w, 201, map[string]any{"snapshot": s})
+		}
+	})
+	mux.HandleFunc("DELETE /v2/snapshots/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s := v.snapshot(r.PathValue("id"))
+		if s == nil {
+			fail(w, 404, "Invalid snapshot-id.")
+			return
+		}
+		d := deletion{ID: s.ID}
+		for _, x := range v.snapshots {
+			d.NewerComplete = d.NewerComplete || x.Description == s.Description && x.Status == "complete" && x.DateCreated > s.DateCreated
+		}
+		v.deleted = append(v.deleted, d)
+		v.snapshots = slices.DeleteFunc(v.snapshots, func(x *snapshot) bool { return x == s })
 		w.WriteHeader(204)
 	})
 	mux.HandleFunc("GET /v2/blocks", func(w http.ResponseWriter, r *http.Request) {
@@ -562,6 +642,13 @@ func (v *fakeVultr) tick() {
 			}
 		}
 	}
+	for _, s := range v.snapshots {
+		if s.pending > 0 {
+			if s.pending--; s.pending == 0 {
+				s.Status = "complete"
+			}
+		}
+	}
 	for _, b := range v.blocks {
 		if b.detaching > 0 {
 			if b.detaching--; b.detaching == 0 {
@@ -579,6 +666,7 @@ func (v *fakeVultr) deleteInstance(id string) bool {
 		return false
 	}
 	v.instances = slices.DeleteFunc(v.instances, func(x *instance) bool { return x == i })
+	v.snapshots = slices.DeleteFunc(v.snapshots, func(s *snapshot) bool { return s.instance == id && s.Status == "pending" })
 	for _, b := range v.blocks {
 		if b.AttachedTo == id {
 			b.detaching = detachTicks
@@ -607,6 +695,25 @@ func (v *fakeVultr) instance(id string) *instance {
 		}
 	}
 	return nil
+}
+
+func (v *fakeVultr) snapshot(id string) *snapshot {
+	for _, s := range v.snapshots {
+		if s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
+// addSnapshot adds a snapshot created now: later ones sort after earlier ones
+// by date_created, as on the real API.
+func (v *fakeVultr) addSnapshot(description, status string) *snapshot {
+	id := v.id()
+	s := &snapshot{ID: id, Description: description, Status: status,
+		DateCreated: time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC).Add(time.Duration(v.next) * time.Second).Format("2006-01-02T15:04:05+00:00")}
+	v.snapshots = append(v.snapshots, s)
+	return s
 }
 
 func (v *fakeVultr) block(id string) *block {

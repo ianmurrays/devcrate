@@ -16,7 +16,8 @@ import (
 
 // TestLiveSmoke runs devcrate against a real Vultr account. It creates an
 // instance and a volume (billed), and the Self-stop service user, policy and
-// key, and deletes them all at the end. It is skipped
+// key, and a Base image (a snapshot, billed), and deletes them all at the
+// end. It is skipped
 // unless all of these are set:
 //
 //	VULTR_API_KEY                  the account's API key
@@ -24,8 +25,9 @@ import (
 //	DEVCRATE_VULTR_SMOKE_REPO      public https git URL of a repo with a devcontainer.json
 //
 // and optionally DEVCRATE_VULTR_SMOKE_IMAGE (a snapshot ID) and
-// DEVCRATE_VULTR_SMOKE_PLAN. It stops once with devcrate stop, and once by
-// leaving the Environment Idle until it Self-stops. Run with
+// DEVCRATE_VULTR_SMOKE_PLAN. It stops once with devcrate stop, once with
+// devcrate save-image, then resumes from the Base image, and stops once more
+// by leaving the Environment Idle until it Self-stops. Run with
 //
 //	go test -v -run TestLiveSmoke -timeout 60m ./providers/vultr/
 func TestLiveSmoke(t *testing.T) {
@@ -168,10 +170,12 @@ func TestLiveSmoke(t *testing.T) {
 	run("git", "init", "-q")
 	run("git", "remote", "add", "origin", os.Getenv("DEVCRATE_VULTR_SMOKE_REPO"))
 	t.Cleanup(func() {
-		cmd := exec.Command(filepath.Join(bin, "devcrate"), "delete", "--yes")
-		cmd.Dir, cmd.Env = dir, env
-		out, _ := cmd.CombinedOutput()
-		t.Logf("cleanup: devcrate delete --yes:\n%s", out)
+		for _, args := range [][]string{{"delete", "--yes"}, {"save-image", "--delete"}} {
+			cmd := exec.Command(filepath.Join(bin, "devcrate"), args...)
+			cmd.Dir, cmd.Env = dir, env
+			out, _ := cmd.CombinedOutput()
+			t.Logf("cleanup: devcrate %s:\n%s", strings.Join(args, " "), out)
+		}
 	})
 
 	// 1. up to Ready.
@@ -207,7 +211,38 @@ func TestLiveSmoke(t *testing.T) {
 		t.Errorf("after resume: %d users, %d policies, %d keys; want 1 each", u, p, k)
 	}
 
-	// 4. Left Idle, it Self-stops with that key and keeps the volume.
+	// 4. save-image keeps only the volume and a Base image, which the next
+	// up boots from, root disk and all.
+	devcrate("ssh", "--", "touch /opt/devcrate-smoke-base")
+	devcrate("save-image")
+	if instances() != 0 || volumes() != 1 {
+		t.Fatalf("after save-image: %d instances, %d volumes; want 0 and 1", instances(), volumes())
+	}
+	var st struct {
+		BaseImage *struct{ ID string } `json:"base_image"`
+	}
+	if err := json.Unmarshal([]byte(devcrate("status", "--json")), &st); err != nil || st.BaseImage == nil {
+		t.Fatalf("devcrate status --json after save-image has no base_image (%v)", err)
+	}
+	start = time.Now()
+	devcrate("up")
+	t.Logf("RESUME FROM THE BASE IMAGE TOOK %s", time.Since(start).Round(time.Second))
+	var booted struct {
+		Instances []struct {
+			Tags       []string
+			SnapshotID string `json:"snapshot_id"`
+		}
+	}
+	get("/instances?per_page=500", &booted)
+	for _, i := range booted.Instances {
+		if slices.Contains(i.Tags, "devcrate:"+name) && i.SnapshotID != st.BaseImage.ID {
+			t.Errorf("instance booted from snapshot %q, want the Base image %s", i.SnapshotID, st.BaseImage.ID)
+		}
+	}
+	devcrate("ssh", "--", "test -f /opt/devcrate-smoke-base && test -f /var/lib/devcrate/workspace/.devcrate-smoke")
+	devcrate("ssh", "--container", "--", "hostname")
+
+	// 5. Left Idle, it Self-stops with that key and keeps the volume.
 	start = time.Now()
 	for instances() != 0 {
 		if time.Since(start) > 15*time.Minute {
@@ -220,7 +255,7 @@ func TestLiveSmoke(t *testing.T) {
 		t.Fatalf("after Self-stop: %d volumes, want 1", volumes())
 	}
 
-	// 5. delete leaves no instance, volume, user, policy or key behind.
+	// 6. delete leaves no instance, volume, user, policy or key behind.
 	devcrate("delete", "--yes")
 	if instances() != 0 || volumes() != 0 {
 		t.Errorf("after delete: %d instances, %d volumes of %s", instances(), volumes(), name)

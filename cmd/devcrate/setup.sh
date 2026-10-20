@@ -138,6 +138,9 @@ if [ -n "$restart" ]; then
 	systemctl stop docker docker.socket containerd
 	systemctl start containerd docker.socket docker
 fi
+# A Base image ships them disabled, so they start only now, with the volume
+# mounted. --now leaves running units alone.
+systemctl enable --now containerd docker.socket docker
 # The containerd move is untested on real clouds; this is the guard.
 docker_root=$(readlink -f "$(docker info -f '{{.DockerRootDir}}')")
 containerd_root=$(readlink -f "$(containerd config dump 2>/dev/null | sed -n "s/^root = ['\"]\(.*\)['\"]$/\1/p")")

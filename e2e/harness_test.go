@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -387,10 +388,35 @@ func (e *Env) destroy() {
 	for _, id := range strings.Fields(string(ids)) {
 		exec.Command("docker", "rm", "-f", "-v", id).Run() // -v: the VM's anonymous docker/containerd volumes
 	}
+	e.removeBaseImages()
 	vols, _ := exec.Command("docker", "volume", "ls", "-q", "--filter", label).Output()
 	for _, v := range strings.Fields(string(vols)) {
 		exec.Command("docker", "volume", "rm", "-f", v).Run()
 	}
+}
+
+// commitLocked runs f holding the fake Provider's commit lock: committing or
+// removing images while another test commits makes Docker's containerd image
+// store fail the commit.
+func commitLocked(f func()) {
+	lock, err := os.OpenFile(filepath.Join(os.TempDir(), "devcrate-fake-commit.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	must(err)
+	defer lock.Close()
+	must(syscall.Flock(int(lock.Fd()), syscall.LOCK_EX))
+	f()
+}
+
+// removeBaseImages removes the fake Provider's Base images for base name
+// e.Name.
+func (e *Env) removeBaseImages() {
+	commitLocked(func() {
+		tags, _ := exec.Command("docker", "images", "devcrate-fake-base-"+e.Name, "--format", "{{.Repository}}:{{.Tag}}").Output()
+		for _, tag := range strings.Fields(string(tags)) {
+			exec.Command("docker", "rmi", "-f", tag).Run()
+		}
+		// The older ones a save untagged.
+		exec.Command("docker", "image", "prune", "-f", "--filter", "label=devcrate.fake.base="+e.Name).Run()
+	})
 }
 
 func sh(dir, name string, args ...string) error {

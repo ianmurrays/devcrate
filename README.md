@@ -231,7 +231,7 @@ A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted
 
 devcrate does not install `gh`. Install it from a [setup script](#setup-scripts) and authenticate it with a forwarded [credential](#credentials).
 
-On the VM, install it from GitHub's apt repository in your user script. Only `/root` is on the volume, so the root disk outside it is fresh on every resume and the script installs `gh` again then; bake it into your Provider's base image to skip that.
+On the VM, install it from GitHub's apt repository in your user script. Only `/root` is on the volume, so the root disk outside it is fresh on every resume and the script installs `gh` again then; save the repo's [Base image](#base-image) to skip that.
 
 ```sh
 # ~/.config/devcrate/setup.sh
@@ -337,6 +337,24 @@ devcrate-agent keep-alive 2h         # on the VM, e.g. from a script
 ```
 
 The duration is Go-style (`90s`, `30m`, `2h30m`). The hold ends on its own: the Environment then stops after a further `idle_timeout` with nobody connected. Each call replaces the previous hold, so a shorter one cuts it short. The hold lives in tmpfs (`/run/devcrate/keep-alive`), so a reboot or Stop drops it. `devcrate keep-alive` never starts a stopped Environment and fails like `devcrate ssh` does.
+
+## Base image
+
+Every `up` after a Stop boots a new VM, so whatever setup installed outside `/var/lib/devcrate` (Docker, the devcontainer CLI, what your setup scripts put on the VM) is installed again. Save a Ready Environment's root disk as the repo's Base image to skip that:
+
+```sh
+devcrate save-image [name]
+```
+
+devcrate removes its own state from the VM, and the Provider snapshots it and destroys the VM, keeping the volume: the Environment ends Stopped, as after `devcrate stop`. From then on, every `up` of the repo's Environments, its worktree Environments included, boots from the Base image. Setup still runs on every `up`, so your setup scripts must stay idempotent. Saving again, from any of the repo's Environments, replaces the Base image. `save-image` refuses an Environment that is not Ready, and fails before touching the VM when the Provider does not support it.
+
+`devcrate status` shows the Base image the Environment boots from, with its creation time, since it bills for storage (`base_image` in `--json`). `devcrate delete` leaves it, since it belongs to the repo. To remove it, so the next `up` boots from the `image` option or stock Ubuntu again, touching no Environment:
+
+```sh
+devcrate save-image --delete [name]
+```
+
+Outside the clone, `status` and `save-image --delete` find a worktree Environment's Base image through its volume while it is Ready. While it is Stopped they take the given name as the base name, so run them in the clone, or name the base Environment.
 
 ## Coding-assistant skill
 

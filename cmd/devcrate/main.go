@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 
 	"github.com/ianmurrays/devcrate/internal/provider"
@@ -35,12 +37,14 @@ var (
 	userDataSh string
 	//go:embed repofiles.sh
 	repoFilesSh string
+	//go:embed scrub.sh
+	scrubScript string
 	// Both put the volume's state in place with volume.sh's function.
 	setupScript = volumeScript + repoFilesSh + setupSh
 	userData    = volumeScript + userDataSh
 )
 
-const usage = "usage: devcrate up [--rebuild] [--name <name>] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
+const usage = "usage: devcrate up [--rebuild] [--name <name>] [git-url] | stop [name] | save-image [--delete] [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -64,6 +68,8 @@ func run(args []string) error {
 		cmd, allowed = up, append(allowed, "--rebuild", "--name=")
 	case "stop":
 		cmd = stop
+	case "save-image":
+		cmd, allowed = saveImage, append(allowed, "--delete")
 	case "delete":
 		cmd, allowed = del, append(allowed, "--yes")
 	case "status":
@@ -225,6 +231,9 @@ func up(flags map[string]string, args []string) error {
 	if err := env.installAgent(client, res, selfStop); err != nil {
 		return fmt.Errorf("installing the Agent: %w", err)
 	}
+	if err := remote.Run(client, "cat > "+baseNamePath, strings.NewReader(env.baseName()), os.Stdout, os.Stderr); err != nil {
+		return fmt.Errorf("recording the base name: %w", err)
+	}
 
 	// setup.sh runs the user's script from here. 0600: /run/devcrate is
 	// traversable by everyone (creds.sh).
@@ -274,6 +283,79 @@ func stop(flags map[string]string, args []string) error {
 	return nil
 }
 
+// saveImage saves a Ready Environment's root disk as its repo's Base image,
+// leaving it Stopped (ADR 0009). With --delete it deletes the Base image.
+func saveImage(flags map[string]string, args []string) error {
+	env, err := resolve(flags["--provider"], args)
+	if err != nil {
+		return err
+	}
+	if env.provider == nil {
+		return env.missing()
+	}
+	if flags["--delete"] != "" {
+		// Outside the clone, a Stopped worktree Environment's base name is
+		// its own name, which deletes nothing; up it first.
+		req := env.request()
+		res, err := env.provider.Status(req)
+		if err != nil {
+			return err
+		}
+		if client, ready := env.dialReady(res); ready {
+			if base, err := readBaseName(client); err == nil {
+				req.BaseName = base
+			}
+			client.Close()
+		}
+		req.Delete = true
+		if err := env.provider.SaveImage(req); err != nil {
+			return err
+		}
+		fmt.Printf("deleted the Base image of %s\n", req.BaseName)
+		return nil
+	}
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	res, err := env.provider.Status(env.request())
+	if err != nil {
+		return err
+	}
+	client, ready := env.dialReady(res)
+	if !ready {
+		return fmt.Errorf("%s is not Ready: run devcrate up first", env.Name)
+	}
+	defer client.Close()
+
+	base, err := readBaseName(client)
+	if err != nil {
+		return fmt.Errorf("reading %s's base name: %w: run devcrate up first", env.Name, err)
+	}
+	req := env.request()
+	req.BaseName = base
+	req.Check = true
+	var stderr strings.Builder
+	check := *env.provider
+	check.Stderr = &stderr
+	if err := check.SaveImage(req); err != nil {
+		return fmt.Errorf("provider %s does not support save-image: %s", env.provider.Name, strings.TrimSpace(stderr.String()))
+	}
+
+	fmt.Printf("saving the Base image of %s…\n", env.Name)
+	if err := remote.Run(client, "sh -s", strings.NewReader(scrubScript), os.Stdout, os.Stderr); err != nil {
+		return fmt.Errorf("removing devcrate's state from %s: %w: run devcrate up to recover it", env.Name, err)
+	}
+	req.Check = false
+	if err := env.provider.SaveImage(req); err != nil {
+		return fmt.Errorf("%w: run devcrate up to recover %s", err, env.Name)
+	}
+	// The host key pin stays, as on stop: the host keys live on the volume.
+	fmt.Printf("saved the Base image of %s; %s is stopped\n", req.BaseName, env.Name)
+	return nil
+}
+
 // del removes the VM and the volume, after a y/N prompt unless --yes.
 func del(flags map[string]string, args []string) error {
 	env, err := resolve(flags["--provider"], args)
@@ -309,36 +391,83 @@ func del(flags map[string]string, args []string) error {
 	return nil
 }
 
-// status prints one state word and succeeds for every state.
+// status prints one state word, then the Base image if any, and succeeds
+// for every state.
 func status(flags map[string]string, args []string) error {
 	env, err := resolve(flags["--provider"], args)
 	if err != nil {
 		return err
 	}
 	state := "missing"
+	var base *provider.BaseImage
 	if env.provider != nil {
-		res, err := env.provider.Status(env.request())
+		req := env.request()
+		res, err := env.provider.Status(req)
 		if err != nil {
 			return err
 		}
-		state = string(res.State)
-		switch res.State {
-		case provider.NotFound:
+		state, base = string(res.State), res.BaseImage
+		if res.State == provider.NotFound {
 			state = "missing"
-		case provider.Running:
-			if client, err := env.dial(res, 0); err == nil {
-				if remote.Run(client, "test -f /run/devcrate/ready", nil, nil, nil) == nil {
-					state = "ready"
+		}
+		if client, ready := env.dialReady(res); ready {
+			state = "ready"
+			// Outside the clone, the request's base name may not be
+			// the repo's.
+			if name, err := readBaseName(client); err == nil && name != req.BaseName {
+				req.BaseName = name
+				res, err := env.provider.Status(req)
+				if err != nil {
+					client.Close()
+					return err
 				}
-				client.Close()
+				base = res.BaseImage
 			}
+			client.Close()
 		}
 	}
 	if flags["--json"] != "" {
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"name": env.Name, "state": state})
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Name      string              `json:"name"`
+			State     string              `json:"state"`
+			BaseImage *provider.BaseImage `json:"base_image,omitempty"`
+		}{env.Name, state, base})
 	}
 	fmt.Println(state)
+	if base != nil {
+		fmt.Printf("Base image: %s (created %s)\n", base.ID, base.Created)
+	}
 	return nil
+}
+
+// baseNamePath is where up records the base name: on the volume, so later
+// commands can read it from the VM even outside the clone.
+const baseNamePath = "/var/lib/devcrate/base-name"
+
+// readBaseName reads the base name up recorded on the volume of client's VM,
+// as a request has no repo context for a bare name outside its clone.
+func readBaseName(client *ssh.Client) (string, error) {
+	var base strings.Builder
+	if err := remote.Run(client, "cat "+baseNamePath, nil, &base, io.Discard); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(base.String()), nil
+}
+
+// dialReady connects to the VM res when the Environment is Ready.
+func (e *environment) dialReady(res provider.Result) (*ssh.Client, bool) {
+	if res.State != provider.Running {
+		return nil, false
+	}
+	client, err := e.dial(res, 0)
+	if err != nil {
+		return nil, false
+	}
+	if remote.Run(client, "test -f /run/devcrate/ready", nil, nil, nil) != nil {
+		client.Close()
+		return nil, false
+	}
+	return client, true
 }
 
 // list prints every Environment of every known Provider: the current repo's
@@ -570,7 +699,17 @@ func (e *environment) request() provider.Request {
 		Options:       e.options,
 		SSHPublicKey:  e.key.AuthorizedKey,
 		UserData:      userData,
+		BaseName:      e.baseName(),
 	}
+}
+
+// baseName is the base name, or the Environment name when there is no repo
+// context (`up <git-url>`, a bare name outside its clone).
+func (e *environment) baseName() string {
+	if e.base != "" {
+		return e.base
+	}
+	return e.Name
 }
 
 // config is the user config, ~/.config/devcrate/config.toml.

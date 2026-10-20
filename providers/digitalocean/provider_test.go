@@ -6,6 +6,7 @@ package digitalocean
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,17 +61,25 @@ type result struct {
 	Code           int
 }
 
-// run runs the Provider verb with a request for Environment env.
+// run runs the Provider verb with a request for Environment env, the base
+// Environment of its repo.
 func (f *fixture) run(verb, env string, options map[string]any, extraEnv ...string) result {
 	f.t.Helper()
-	if options == nil {
-		options = map[string]any{}
+	return f.request(verb, map[string]any{"environment_id": env, "base_name": env, "options": options}, extraEnv...)
+}
+
+// request runs the Provider verb with req, completed with devcrate's key
+// and user data.
+func (f *fixture) request(verb string, req map[string]any, extraEnv ...string) result {
+	f.t.Helper()
+	if req["options"] == nil {
+		req["options"] = map[string]any{}
 	}
-	req, _ := json.Marshal(map[string]any{
-		"environment_id": env, "options": options, "ssh_public_key": pubKey, "user_data": userData,
-	})
+	req["ssh_public_key"], req["user_data"] = pubKey, userData
+	env := req["environment_id"]
+	body, _ := json.Marshal(req)
 	cmd := exec.Command("./devcrate-provider-digitalocean", verb)
-	cmd.Stdin = bytes.NewReader(req)
+	cmd.Stdin = bytes.NewReader(body)
 	cmd.Env = append(os.Environ(), append([]string{"PATH=" + f.path, "FAKE_CLOUD=" + f.state}, extraEnv...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -393,4 +402,257 @@ func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// saveImage runs save-image for Environment env of base Environment base.
+func (f *fixture) saveImage(env, base string, flags map[string]any) result {
+	f.t.Helper()
+	req := map[string]any{"environment_id": env, "base_name": base, "options": opts}
+	maps.Copy(req, flags)
+	return f.request("save-image", req)
+}
+
+// save-image powers the droplet off, snapshots it, waits for the snapshot,
+// labels it as base's Base image, deletes every older one only then, and
+// destroys the droplet, keeping the volume.
+func TestSaveImageReplacesTheBaseImageAndStops(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.ok("up", "web", opts, nil) // another repo's Environment and Base image
+	if r := f.saveImage("web", "web", nil); r.Code != 0 || r.Stdout != "" {
+		t.Fatalf("save-image web: exit %d, stdout %q", r.Code, r.Stdout)
+	}
+	f.ok("up", "web", opts, nil)
+	web := f.cloud().Snapshots
+
+	for range 2 {
+		if r := f.saveImage("api", "api", nil); r.Code != 0 || r.Stdout != "" {
+			t.Fatalf("save-image: exit %d, stdout %q", r.Code, r.Stdout)
+		}
+		f.ok("up", "api", opts, nil)
+	}
+
+	c := f.cloud()
+	var api []*snapshot
+	for _, s := range c.Snapshots {
+		if !slices.ContainsFunc(web, func(w *snapshot) bool { return w.ID == s.ID }) {
+			api = append(api, s)
+		}
+	}
+	if len(c.Snapshots) != 2 || len(api) != 1 {
+		t.Fatalf("snapshots = %s, want web's and api's newest only", mustJSON(c.Snapshots))
+	}
+	// The newest is the one the second save took, after the first was used.
+	var d *droplet
+	for _, x := range c.Droplets {
+		if x.Name == "devcrate-api" {
+			d = x
+		}
+	}
+	if d.Image != api[0].ID {
+		t.Errorf("api's droplet booted from %s, want its Base image %s", d.Image, api[0].ID)
+	}
+	if len(c.Volumes) != 2 || !slices.Equal(d.Volumes, []string{c.Volumes[0].ID}) {
+		t.Errorf("volumes = %s, droplet's = %v; want api's volume kept and reattached", mustJSON(c.Volumes), d.Volumes)
+	}
+}
+
+func TestSaveImageDeletesThePreviousBaseImageOnlyOnceTheNewOneIsComplete(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.saveImage("api", "api", nil)
+	old := f.cloud().Snapshots[0]
+	f.ok("up", "api", opts, nil)
+	if r := f.saveImage("api", "api", nil); r.Code != 0 {
+		t.Fatalf("save-image: exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	if c := f.cloud(); !slices.Equal(c.Deleted, []deletion{{ID: old.ID, NewerComplete: true}}) {
+		t.Errorf("deleted snapshots = %+v, want only the old Base image %s, once the new one was complete", c.Deleted, old.ID)
+	}
+}
+
+// A sibling worktree's save that completes after this one keeps its Base
+// image, and this save keeps its own: the sibling's deletes it.
+func TestSaveImageKeepsANewerBaseImageASiblingSaved(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.saveImage("api", "api", nil)
+	old := f.cloud().Snapshots[0]
+	f.ok("up", "api", opts, nil)
+	req := map[string]any{"environment_id": "api", "base_name": "api", "options": opts}
+	if r := f.request("save-image", req, "FAKE_SIBLING_SAVE=1"); r.Code != 0 {
+		t.Fatalf("save-image: exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	c := f.cloud()
+	if len(c.Snapshots) != 2 || c.Snapshots[1].ResourceID != "sibling" || !slices.Equal(c.Deleted, []deletion{{ID: old.ID, NewerComplete: true}}) {
+		t.Errorf("snapshots = %s, deleted %+v; want this save's and the sibling's, and only %s deleted", mustJSON(c.Snapshots), c.Deleted, old.ID)
+	}
+}
+
+func TestUpBootsFromTheNewestOfTwoBaseImages(t *testing.T) {
+	f := newFixture(t)
+	c := f.cloud()
+	older := c.addSnapshot("devcrate-base-api", "nyc3", "1")
+	newest := c.addSnapshot("devcrate-base-api", "nyc3", "2")
+	c.addSnapshot("devcrate-base-web", "nyc3", "3")
+	// Listed out of order, so up must sort them.
+	c.Snapshots = []*snapshot{c.Snapshots[2], newest, older}
+	c.save(f.state)
+	f.ok("up", "api", opts, nil)
+	if d := f.cloud().Droplets[0]; d.Image != newest.ID {
+		t.Errorf("droplet booted from %s, want the newest Base image %s", d.Image, newest.ID)
+	}
+}
+
+// A snapshot that fails leaves the previous Base image, and the droplet off
+// for devcrate up to power on again.
+func TestFailedSaveImageKeepsThePreviousBaseImage(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.saveImage("api", "api", nil)
+	f.ok("up", "api", opts, nil)
+	before := f.cloud().Snapshots
+
+	req := map[string]any{"environment_id": "api", "base_name": "api", "options": opts}
+	r := f.request("save-image", req, "FAKE_DOCTL_FAIL=droplet-action snapshot")
+	if r.Code == 0 || !strings.Contains(r.Stderr, "Error: failing as asked") {
+		t.Fatalf("save-image with a failing snapshot: exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	if c := f.cloud(); mustJSON(c.Snapshots) != mustJSON(before) || len(c.Droplets) != 1 || c.Droplets[0].Status != "off" {
+		t.Errorf("after a failed save: snapshots %s (want %s), droplets %s", mustJSON(c.Snapshots), mustJSON(before), mustJSON(c.Droplets))
+	}
+	var res upResult
+	f.ok("up", "api", opts, &res)
+	if res.State != "running" {
+		t.Errorf("up after a failed save = %+v, want running", res)
+	}
+}
+
+// A worktree Environment in another region than its repo's Base image warns
+// and boots from the image option instead.
+func TestUpFallsBackToImageWhenTheBaseImageIsInAnotherRegion(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.saveImage("api", "api", nil)
+	base := f.cloud().Snapshots[0].ID
+
+	ams := map[string]any{"image": "123456789", "token": "t", "region": "ams3"}
+	r := f.request("up", map[string]any{"environment_id": "api-feature", "base_name": "api", "options": ams})
+	if r.Code != 0 || !strings.Contains(r.Stderr, "digitalocean: warning: the Base image "+base+" is not available in ams3, using the image option") {
+		t.Fatalf("up in ams3: exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	if d := f.cloud().Droplets[0]; d.Name != "devcrate-api-feature" || d.Image != "123456789" {
+		t.Errorf("droplet = %+v, want devcrate-api-feature from image 123456789", d)
+	}
+
+	// In the Base image's region the worktree Environment boots from it.
+	r = f.request("up", map[string]any{"environment_id": "api-other", "base_name": "api", "options": opts})
+	c := f.cloud()
+	if r.Code != 0 || strings.Contains(r.Stderr, "warning") || c.Droplets[1].Image != base {
+		t.Errorf("up in nyc3: exit %d, stderr %q, droplet %+v; want Base image %s", r.Code, r.Stderr, c.Droplets[1], base)
+	}
+}
+
+// changing reports whether a doctl call can change the account.
+func changing(call []string) bool {
+	return !slices.ContainsFunc(call, func(a string) bool { return a == "list" || a == "get" })
+}
+
+// save-image with check makes no changing call; with delete it removes only
+// the Base image.
+func TestSaveImageCheckAndDelete(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.ok("up", "web", opts, nil)
+	f.saveImage("web", "web", nil)
+	f.ok("up", "web", opts, nil)
+	f.saveImage("api", "api", nil)
+	f.ok("up", "api", opts, nil)
+	before := f.cloud()
+
+	if r := f.saveImage("api", "api", map[string]any{"check": true}); r.Code != 0 || r.Stdout != "" {
+		t.Fatalf("check: exit %d, stdout %q", r.Code, r.Stdout)
+	}
+	if calls := f.cloud().Calls[len(before.Calls):]; slices.ContainsFunc(calls, changing) {
+		t.Errorf("check made changing calls: %v", calls)
+	}
+
+	if r := f.saveImage("api", "api", map[string]any{"delete": true}); r.Code != 0 || r.Stdout != "" {
+		t.Fatalf("delete: exit %d, stdout %q", r.Code, r.Stdout)
+	}
+	c := f.cloud()
+	if len(c.Snapshots) != 1 || c.Snapshots[0].Name != "devcrate-base-web" {
+		t.Errorf("snapshots after delete = %s, want only web's", mustJSON(c.Snapshots))
+	}
+	if mustJSON(c.Droplets) != mustJSON(before.Droplets) || mustJSON(c.Volumes) != mustJSON(before.Volumes) {
+		t.Errorf("delete changed Environments: droplets %s, volumes %s", mustJSON(c.Droplets), mustJSON(c.Volumes))
+	}
+	if r := f.saveImage("api", "api", map[string]any{"delete": true}); r.Code != 0 {
+		t.Errorf("second delete: exit %d, want 0 (idempotent)", r.Code)
+	}
+}
+
+// status reports the Base image up boots from, so its storage bill is
+// visible; list stays as it was.
+func TestStatusShowsTheBaseImage(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	var st map[string]any
+	f.ok("status", "api", opts, &st)
+	if _, ok := st["base_image"]; ok {
+		t.Errorf("status without a Base image = %v", st)
+	}
+
+	f.saveImage("api", "api", nil)
+	s := f.cloud().Snapshots[0]
+	st = nil
+	f.ok("status", "api", opts, &st)
+	want := map[string]any{"state": "stopped", "base_image": map[string]any{"id": s.ID, "created": s.Created}}
+	if mustJSON(st) != mustJSON(want) {
+		t.Errorf("status = %s, want %s", mustJSON(st), mustJSON(want))
+	}
+	var items []map[string]string
+	f.ok("list", "", nil, &items)
+	if want := `[{"environment_id":"api","state":"stopped"}]`; mustJSON(items) != want {
+		t.Errorf("list = %s, want %s", mustJSON(items), want)
+	}
+}
+
+// A droplet booted from a Base image has no volume line in /etc/fstab (devcrate
+// removes it before the save): the user data adds one for the droplet's own
+// volume and mounts it. Run with /etc/fstab, /dev and the mount point moved to
+// a temporary directory and the disk tools stubbed.
+func TestUserDataMountsItsOwnVolumeOnABaseImage(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api-feature", opts, nil)
+	mount, _, _ := strings.Cut(f.cloud().UserData["devcrate-api-feature"], userData)
+
+	dir := t.TempDir()
+	fstab := filepath.Join(dir, "fstab")
+	if err := os.WriteFile(fstab, []byte("LABEL=cloudimg-rootfs / ext4 discard,errors=remount-ro 0 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dev := filepath.Join(dir, "dev/scsi-0DO_Volume_devcrate-api-feature")
+	os.MkdirAll(filepath.Dir(dev), 0o755)
+	os.WriteFile(dev, nil, 0o644)
+	bin := filepath.Join(dir, "bin")
+	os.Mkdir(bin, 0o755)
+	stubs := map[string]string{"blkid": "exit 0", "mountpoint": "exit 1", "mount": `echo "$@" >> ` + filepath.Join(dir, "mounted")}
+	for tool, body := range stubs {
+		os.WriteFile(filepath.Join(bin, tool), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+	}
+	script := strings.NewReplacer("/etc/fstab", fstab, "/dev/disk/by-id", filepath.Dir(dev), "/var/lib/devcrate", filepath.Join(dir, "mnt")).Replace(mount)
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("user data: %v: %s", err, out)
+	}
+
+	got, _ := os.ReadFile(fstab)
+	if want := dev + " " + filepath.Join(dir, "mnt") + " ext4 defaults,nofail,discard,noatime 0 2\n"; !strings.HasSuffix(string(got), want) {
+		t.Errorf("fstab = %q, want it to end with %q", got, want)
+	}
+	if mounted, _ := os.ReadFile(filepath.Join(dir, "mounted")); string(mounted) != filepath.Join(dir, "mnt")+"\n" {
+		t.Errorf("mounted %q, want the mount point", mounted)
+	}
 }

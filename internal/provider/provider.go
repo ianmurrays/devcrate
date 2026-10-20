@@ -25,6 +25,15 @@ type Request struct {
 	Options       map[string]any `json:"options"`
 	SSHPublicKey  string         `json:"ssh_public_key"`
 	UserData      string         `json:"user_data"`
+	// BaseName is the repo's base Environment name, shared by its worktree
+	// Environments: what its Base image is labelled with.
+	BaseName string `json:"base_name"`
+	// Check (save-image only) asks the Provider to validate that it can
+	// save, changing nothing.
+	Check bool `json:"check,omitempty"`
+	// Delete (save-image only) asks the Provider to delete BaseName's Base
+	// images instead, touching no Environment.
+	Delete bool `json:"delete,omitempty"`
 }
 
 // State is an Environment's state as a Provider reports it.
@@ -46,6 +55,15 @@ type Result struct {
 	// SelfStopEnv (from `up` only) is the environment the self-stop script
 	// runs with on the VM: the Self-stop credential.
 	SelfStopEnv map[string]string `json:"self_stop_env,omitempty"`
+	// BaseImage (from `status` only) is BaseName's Base image that `up`
+	// boots from, if any.
+	BaseImage *BaseImage `json:"base_image,omitempty"`
+}
+
+// BaseImage is a Base image as a Provider reports it.
+type BaseImage struct {
+	ID      string `json:"id"`
+	Created string `json:"created"` // as the Provider formats it
 }
 
 // Provider is one discovered devcrate-provider-<name> executable.
@@ -100,6 +118,11 @@ func (p *Provider) Stop(req Request) error { return p.run("stop", req, nil) }
 
 // Delete removes everything the Environment owns. Its stdout is ignored.
 func (p *Provider) Delete(req Request) error { return p.run("delete", req, nil) }
+
+// SaveImage saves the Environment's root disk as the Base image for
+// BaseName and destroys its VM, keeping the volume (ADR 0009). Its stdout is
+// ignored.
+func (p *Provider) SaveImage(req Request) error { return p.run("save-image", req, nil) }
 
 // SelfStop returns the Provider's self-stop script, which devcrate copies to
 // the VM for the Agent to run with self_stop_env sourced. The verb prints
