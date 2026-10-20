@@ -8,11 +8,15 @@
 // $DEVCRATE_FAKE_REGISTRY_MIRROR, when set, becomes the VM's
 // /etc/docker/daemon.json registry-mirrors at boot.
 //
+// A Base image is a committed VM container, tagged
+// devcrate-fake-base-<base_name>:<unix nanoseconds>; up boots from the newest.
+//
 // Test plumbing: the option `fail = "<verb>"` makes that verb fail, and
 // `busy_while = "<host path>"` makes status report busy while that file exists.
 // `no_self_stop_env = true` makes up return no self_stop_env and self-stop
 // fail, as when no Self-stop credential is configured, and
-// `self_stop_fails = true` makes the self-stop script fail on the VM.
+// `self_stop_fails = true` makes the self-stop script fail on the VM, and
+// `save_image_fails = true` makes save-image fail after shutting the VM down.
 //
 // Self-stop: the VM reaches the host's Docker through its socket, mounted at
 // hostDocker, and the script removes its own container, keeping the volume.
@@ -24,8 +28,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 type request struct {
@@ -33,6 +41,8 @@ type request struct {
 	Options       map[string]any `json:"options"`
 	SSHPublicKey  string         `json:"ssh_public_key"`
 	UserData      string         `json:"user_data"`
+	BaseName      string         `json:"base_name"`
+	Check         bool           `json:"check"`
 }
 
 type result struct {
@@ -83,6 +93,12 @@ func main() {
 			script = "#!/bin/sh\necho 'fake: self-stop failing as asked' >&2\nexit 1\n"
 		}
 		out = map[string]string{"script": script}
+	case "save-image":
+		if req.Check {
+			return
+		}
+		saveImage(req)
+		return
 	case "stop":
 		// A stopped fake VM has no container, only its volume, like a
 		// destroyed droplet with its block volume left behind.
@@ -110,6 +126,9 @@ func up(req request) result {
 		return status(req.EnvironmentID)
 	case "":
 		image := os.Getenv("DEVCRATE_FAKE_IMAGE")
+		if base := baseImages(req.BaseName); len(base) > 0 {
+			image = base[0]
+		}
 		if image == "" {
 			fail("DEVCRATE_FAKE_IMAGE is not set")
 		}
@@ -148,6 +167,50 @@ func up(req request) result {
 		"grep -q devcrate-volume /etc/fstab || echo '/mnt/devcrate-volume /var/lib/devcrate none bind 0 0' >> /etc/fstab; "+
 			"mkdir -p /var/lib/cloud && cat > /var/lib/cloud/user-data && sh /var/lib/cloud/user-data")
 	return status(req.EnvironmentID)
+}
+
+// saveImage shuts the VM down, commits it as the newest Base image for
+// base_name, untags every older one and removes the container, keeping the
+// volume.
+func saveImage(req request) {
+	c := name(req.EnvironmentID)
+	repo := baseRepo(req.BaseName)
+	docker(nil, "stop", c)
+	// As a cloud's snapshot can fail once the VM is halted.
+	if req.Options["save_image_fails"] == true {
+		fail("snapshot failing as asked (save_image_fails)")
+	}
+	// Parallel commits of the same layer race in Docker's containerd image
+	// store ("failed to export layer"). Released on exit.
+	lock, err := os.OpenFile(filepath.Join(os.TempDir(), "devcrate-fake-commit.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		fail("%v", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		fail("locking %s: %v", lock.Name(), err)
+	}
+	// The label lets the harness prune the untagged older ones.
+	docker(nil, "commit", "-c", "LABEL devcrate.fake.base="+req.BaseName, c, fmt.Sprintf("%s:%d", repo, time.Now().UnixNano()))
+	removeContainer(req.EnvironmentID)
+	// Untagged, as a cloud deletes a snapshot that VMs still run from: a
+	// Base image saved from a VM booted from an older one is its child, and
+	// a sibling's VM may still run from it.
+	for _, old := range baseImages(req.BaseName)[1:] {
+		docker(nil, "rmi", "-f", old)
+	}
+}
+
+func baseRepo(baseName string) string { return "devcrate-fake-base-" + baseName }
+
+// baseImages are base_name's Base images, newest first.
+func baseImages(baseName string) []string {
+	out := docker(nil, "images", baseRepo(baseName), "--format", "{{.Tag}}")
+	tags := strings.Fields(out)
+	sort.Sort(sort.Reverse(sort.StringSlice(tags))) // same-length decimal nanoseconds
+	for i, tag := range tags {
+		tags[i] = baseRepo(baseName) + ":" + tag
+	}
+	return tags
 }
 
 // selfStopEnv is what the self-stop script needs: how to reach the host's
