@@ -21,6 +21,9 @@ type Context struct {
 	Origin string // clone URL
 	Root   string // the local clone's top directory; "" from FromURL
 	Name   string // Environment name: see Load
+	// Base is `name` from .devcrate.toml, else the repo name from Origin:
+	// Name without a linked worktree's suffix, --name or the stored name.
+	Base string
 	// StoredName is the name in the worktree's devcrate-name file, "" when
 	// it has none.
 	StoredName string
@@ -80,6 +83,7 @@ func Load(dir, name string) (*Context, error) {
 		return nil, err
 	}
 	c.Root = root
+	c.Base = c.Name
 	file, err := nameFile(dir)
 	if err != nil {
 		return nil, err

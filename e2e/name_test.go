@@ -123,6 +123,21 @@ func TestUpInvalidNameFailsBeforeCreating(t *testing.T) {
 	}
 }
 
+func TestUpNameFallsBackToTheRepoNamesRepoFiles(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	w := e.Worktree("feat", e.Name+"-feat")
+	x := w.Named(e.Name + "-x")
+	e.UserConfig("[forward_repo_files]\n" + e.Name + " = [\"secret.key\"]\n")
+	w.WriteFile("secret.key", "linked")
+	if r := w.Devcrate("up", "--name", x.Name); r.Code != 0 {
+		t.Fatalf("up --name %s exit %d", x.Name, r.Code)
+	}
+	if out, _ := x.VM("cat /var/lib/devcrate/workspace/secret.key"); out != "linked" {
+		t.Errorf("%s's clone has secret.key = %q, want %q from the repo name's entry", x.Name, out, "linked")
+	}
+}
+
 func TestUpNameWithGitURLIsRejected(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
