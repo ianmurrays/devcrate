@@ -60,6 +60,7 @@ const githubTokenGitConfig = "[url \"https://github.com/\"]\n\tinsteadOf = git@g
 // root, or nothing when root is "".
 func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 	var env, names strings.Builder
+	githubToken := false // a non-empty GITHUB_TOKEN is forwarded
 	for _, name := range c.ForwardEnv {
 		if !envName.MatchString(name) {
 			return nil, fmt.Errorf("forward_env: %q is not an environment variable name", name)
@@ -71,6 +72,7 @@ func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 		}
 		fmt.Fprintf(&env, "export %s=%s\n", name, shellQuote(value))
 		fmt.Fprintln(&names, name)
+		githubToken = githubToken || name == "GITHUB_TOKEN" && value != ""
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.ForwardEnvCommands)) {
 		if !envName.MatchString(name) {
@@ -83,8 +85,10 @@ func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 			fmt.Fprintf(os.Stderr, "devcrate: forward_env_commands: the command for %s failed (%v); not forwarding it\n", name, err)
 			continue
 		}
-		fmt.Fprintf(&env, "export %s=%s\n", name, shellQuote(strings.TrimSuffix(string(out), "\n")))
+		value := strings.TrimSuffix(string(out), "\n")
+		fmt.Fprintf(&env, "export %s=%s\n", name, shellQuote(value))
 		fmt.Fprintln(&names, name)
+		githubToken = githubToken || name == "GITHUB_TOKEN" && value != ""
 	}
 
 	var buf bytes.Buffer
@@ -147,7 +151,7 @@ func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 			gitConfig = signingGitConfig
 		}
 	}
-	if c.ForwardAgent != nil && !*c.ForwardAgent && slices.Contains(strings.Split(names.String(), "\n"), "GITHUB_TOKEN") {
+	if c.ForwardAgent != nil && !*c.ForwardAgent && githubToken {
 		gitConfig += githubTokenGitConfig
 	}
 	if gitConfig != "" {

@@ -140,6 +140,7 @@ func TestGitHubTokenModeNeedsNoAgentAndAForwardedToken(t *testing.T) {
 		{"agent default", &config{ForwardEnv: []string{"GITHUB_TOKEN"}}, false},
 		{"agent on", &config{ForwardAgent: &on, ForwardEnv: []string{"GITHUB_TOKEN"}}, false},
 		{"agent off, no token", &config{ForwardAgent: &off}, false},
+		{"agent off, empty token", &config{ForwardAgent: &off, ForwardEnvCommands: map[string]string{"GITHUB_TOKEN": "true"}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := archiveFiles(t, tc.c)["git/config"]

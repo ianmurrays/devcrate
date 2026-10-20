@@ -289,7 +289,7 @@ ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
 ### GitHub over HTTPS with a token
 
-To avoid SSH agent prompts (from 1Password, say) on every `up`, turn agent forwarding off and forward a GitHub token. With `forward_agent = false` and `GITHUB_TOKEN` forwarded, git on the VM and in the devcontainer reaches GitHub over HTTPS with that token: the first clone, fetch and push, including for `git@github.com:` remotes. The token is read from the forwarded credentials at each use, so it is never written to git config or the volume, and the next `up` or `devcrate ssh` refreshes it.
+To avoid SSH agent prompts (from 1Password, say) on every `up`, turn agent forwarding off and forward a GitHub token. With `forward_agent = false` and `GITHUB_TOKEN` forwarded, git on the VM and in the devcontainer reaches GitHub over HTTPS with that token: the first clone, fetch and push, including for `git@github.com:` remotes. The token is read from the forwarded credentials at each use, so it is never written to git config or the volume, and the next `up` or `devcrate ssh` refreshes it. Switching between token and SSH agent mode takes effect on the next `up`. A forwarded `~/.gitconfig` that rewrites GitHub HTTPS URLs to SSH undoes this mode.
 
 ```toml
 # ~/.config/devcrate/config.toml

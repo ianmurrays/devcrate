@@ -170,10 +170,11 @@ grep -qs '^github.com ssh-ed25519 ' /etc/ssh/ssh_known_hosts ||
 # Commit signing (ADR 0006) and GitHub token mode: the system git config
 # includes the fragment devcrate pushes with git_signing_key or a forwarded
 # GITHUB_TOKEN. git skips a missing include, so without the key commits are
-# unsigned. Added once, keeping other settings.
-add_signing_include='git config --system --get-all include.path | grep -qxF /run/devcrate/creds/git/config ||
+# unsigned, and without the token GitHub goes over SSH. Added once, keeping
+# other settings.
+add_creds_include='git config --system --get-all include.path | grep -qxF /run/devcrate/creds/git/config ||
 	git config --system --add include.path /run/devcrate/creds/git/config'
-sh -c "$add_signing_include"
+sh -c "$add_creds_include"
 
 # remote.origin.url, not `remote get-url`: get-url applies the rewrite above.
 # Only a new clone checks out the branch: an existing one is never switched,
@@ -196,7 +197,8 @@ fi
 # Before setup_script and devcontainer up, which may need them.
 copy_repo_files
 
-# Forwarded env vars, pushed to tmpfs by devcrate just before setup. Both
+# Forwarded env vars, pushed to tmpfs by devcrate just before setup (so git's
+# GitHub token helper above already reads them for the clone). Both
 # setup scripts see them, and a Dockerfile's `--secret id=NAME` reads them
 # from this environment.
 creds=/run/devcrate/creds
@@ -261,7 +263,7 @@ else
 	fi
 	id=$(docker ps -q --filter "label=devcontainer.local_folder=$workspace")
 	docker exec -u 0 "$id" sh -c "mkdir -p /etc/profile.d && echo 'if [ -r $creds/env ]; then . $creds/env; fi' > /etc/profile.d/devcrate-creds.sh" 9>&-
-	docker exec -u 0 "$id" sh -c "if command -v git >/dev/null; then $add_signing_include; fi" 9>&-
+	docker exec -u 0 "$id" sh -c "if command -v git >/dev/null; then $add_creds_include; fi" 9>&-
 	devcontainer exec --workspace-folder "$workspace" sh -c "cd $creds/files && find . -type f | while IFS= read -r p; do p=\${p#./}; mkdir -p \"\$HOME/\$(dirname \"\$p\")\" && ln -sfn \"$creds/files/\$p\" \"\$HOME/\$p\"; done" < /dev/null 9>&-
 fi
 
