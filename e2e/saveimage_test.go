@@ -64,6 +64,25 @@ func TestSaveImageFailingCheckLeavesTheEnvironmentReady(t *testing.T) {
 	}
 }
 
+func TestSaveImageOnAProviderWithoutTheVerbLeavesTheEnvironmentReady(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	e.WriteFile(".devcrate.toml", "provider = \"fake\"\nunknown = \"save-image\"\n")
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up exit %d", r.Code)
+	}
+	r := e.Devcrate("save-image")
+	if want := `provider fake does not support save-image: fake: unknown verb "save-image"`; r.Code != 1 || !strings.Contains(r.Stderr, want) {
+		t.Errorf("save-image on a Provider without the verb = exit %d stderr %q, want exit 1 with %q", r.Code, r.Stderr, want)
+	}
+	if r := e.Devcrate("status"); r.Stdout != "ready\n" {
+		t.Errorf("status after save-image on a Provider without the verb = %q, want ready", r.Stdout)
+	}
+	if imgs := e.BaseImages(); len(imgs) != 0 {
+		t.Errorf("save-image on a Provider without the verb made Base images %v", imgs)
+	}
+}
+
 // installOnceScript is a repo setup script whose install branch writes a
 // marker on the root disk, outside /var/lib/devcrate, and counts its runs on
 // the volume.
