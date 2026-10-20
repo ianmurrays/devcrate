@@ -21,14 +21,18 @@ type Context struct {
 	Origin string // clone URL
 	Root   string // the local clone's top directory; "" from FromURL
 	Name   string // Environment name: see Load
-	// Base is `name` from .devcrate.toml, else the repo name from Origin:
-	// Name without a linked worktree's suffix, --name or the stored name.
+	// Base is the base name: `name` from .devcrate.toml, else the repo name
+	// from Origin; Name without a linked worktree's suffix, --name or the
+	// stored name.
 	Base string
 	// StoredName is the name in the worktree's devcrate-name file, "" when
 	// it has none.
 	StoredName string
-	Provider   string         // `provider` from .devcrate.toml, "" when unset
-	Options    map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
+	// Branch is the checked-out branch, even one with no commits yet;
+	// "HEAD" when detached or unreadable; "" from FromURL.
+	Branch   string
+	Provider string         // `provider` from .devcrate.toml, "" when unset
+	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
 	// Devcontainer is `devcontainer` from .devcrate.toml, nil when unset.
 	Devcontainer *bool
 	// IdleTimeout is `idle_timeout` from .devcrate.toml, nil when unset.
@@ -84,6 +88,10 @@ func Load(dir, name string) (*Context, error) {
 	}
 	c.Root = root
 	c.Base = c.Name
+	// symbolic-ref, not rev-parse --abbrev-ref: it names an unborn branch.
+	if c.Branch, err = git(dir, "symbolic-ref", "--short", "-q", "HEAD"); err != nil || c.Branch == "" {
+		c.Branch = "HEAD"
+	}
 	file, err := nameFile(dir)
 	if err != nil {
 		return nil, err

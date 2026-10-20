@@ -39,7 +39,7 @@ const (
 
 // Result is what `up` and `status` print on stdout.
 type Result struct {
-	State State `json:"state"`
+	State State  `json:"state"`
 	Host  string `json:"host"`
 	User  string `json:"user"`
 	Port  int    `json:"port"`

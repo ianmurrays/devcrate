@@ -1,12 +1,12 @@
 # devcrate setup (sent after volume.sh): runs on the VM inside `up`'s SSH
-# session as
-# `sh -s -- <origin> <devcontainer> <setup_script> <in_container> <rebuild> <branch>`,
-# where <devcontainer> is false for a VM-only Environment, <setup_script> is
-# the repo's script (a path in the repo, or empty), <in_container> is true to
-# run the user's script in the devcontainer, <rebuild> is true for
-# `up --rebuild` and <branch> is the laptop checkout's branch for a new clone
-# ("HEAD" when detached, empty for `up <git-url>`). devcrate pushes the user's script
-# to /run/devcrate/user-setup.sh first, if there is one. Any failure exits
+# session as `sh -s -- <origin> <devcontainer> <setup_script> <in_container>
+# <rebuild> <branch>`, where <devcontainer> is false for a VM-only
+# Environment, <setup_script> is the repo's script (a path in the repo, or
+# empty), <in_container> is true to run the user's script in the
+# devcontainer, <rebuild> is true for `up --rebuild` and <branch> is the
+# laptop checkout's branch for a new clone ("HEAD" when detached, empty for
+# `up <git-url>`). devcrate pushes the user's script to
+# /run/devcrate/user-setup.sh first, if there is one. Any failure exits
 # non-zero without the Ready marker, which is written last.
 set -eu
 origin=$1
