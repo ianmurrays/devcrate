@@ -126,3 +126,61 @@ func TestGitSigningKeyOutsideHomeIsRejected(t *testing.T) {
 		t.Errorf("err = %v, want a git_signing_key error", err)
 	}
 }
+
+func TestGitHubTokenModeNeedsNoAgentAndAForwardedToken(t *testing.T) {
+	off, on := false, true
+	t.Setenv("GITHUB_TOKEN", "secret")
+	for _, tc := range []struct {
+		name  string
+		c     *config
+		token bool
+	}{
+		{"agent off, token forwarded", &config{ForwardAgent: &off, ForwardEnv: []string{"GITHUB_TOKEN"}}, true},
+		{"agent off, token from a command", &config{ForwardAgent: &off, ForwardEnvCommands: map[string]string{"GITHUB_TOKEN": "echo secret"}}, true},
+		{"agent default", &config{ForwardEnv: []string{"GITHUB_TOKEN"}}, false},
+		{"agent on", &config{ForwardAgent: &on, ForwardEnv: []string{"GITHUB_TOKEN"}}, false},
+		{"agent off, no token", &config{ForwardAgent: &off}, false},
+		{"agent off, empty token", &config{ForwardAgent: &off, ForwardEnvCommands: map[string]string{"GITHUB_TOKEN": "true"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := archiveFiles(t, tc.c)["git/config"]
+			if tc.token != (got == githubTokenGitConfig) {
+				t.Errorf("git/config = %q, want token mode %t", got, tc.token)
+			}
+			if strings.Contains(got, "secret") {
+				t.Errorf("git/config = %q, want no token in it", got)
+			}
+		})
+	}
+}
+
+func TestGitHubTokenModeKeepsSigning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GITHUB_TOKEN", "secret")
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "signing"), []byte("PRIVATE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	c := &config{ForwardAgent: &off, ForwardEnv: []string{"GITHUB_TOKEN"}, GitSigningKey: "~/.ssh/signing"}
+	buf, err := c.credsArchive("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(buf)
+	for h, err := tr.Next(); err != io.EOF; h, err = tr.Next() {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if data, _ := io.ReadAll(tr); h.Name == "git/config" {
+			if want := signingGitConfig + githubTokenGitConfig; string(data) != want {
+				t.Errorf("git/config = %q, want %q", data, want)
+			}
+			return
+		}
+	}
+	t.Error("no git/config")
+}
