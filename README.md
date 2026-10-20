@@ -88,7 +88,9 @@ devcrate connects to VMs with its own SSH keypair, created on first use at `~/.c
 
 Each git worktree of a repo gets its own Environment, so parallel branches never share a disk. The main worktree uses `name` from `.devcrate.toml`, or else the repo name, as it always has. A linked worktree (`git worktree add`) uses that name plus `-` and the worktree directory's name, lowercased, with every character outside `a-z`, `0-9` and `-` replaced by `-`: a worktree at `../Fix_Login.2` of repo `my-app` gets `my-app-fix-login-2`. If that name is longer than 32 characters, `up` fails before creating anything. Every command run without a name inside a worktree (`up`, `ssh`, `status`, `stop`, `delete`, `keep-alive`, `forward`) acts on that worktree's Environment, and `devcrate list` shows them all.
 
-Two linked worktrees whose directories have the same name, such as `~/a/feat` and `~/b/feat` of one repo, share an Environment.
+Two linked worktrees whose directories have the same name, such as `~/a/feat` and `~/b/feat` of one repo, share an Environment. To separate them, give one its own name with `devcrate up --name <name>`.
+
+`devcrate up --name <name>` chooses the Environment name for the worktree it runs in, main or linked, and remembers it in `devcrate-name` in that worktree's git directory (not the working tree, so `git status` never shows it). Every later command run without a name in that worktree uses it. The name is, in order: the remembered name, `name` from `.devcrate.toml`, then the derived name above. An Environment cannot be renamed, so `up --name <new>` in a worktree whose remembered Environment still exists fails before creating anything: run `devcrate delete <old>` first. `--name` cannot be combined with a git URL.
 
 Removing a worktree leaves its Environment, and its disk keeps billing: find it with `devcrate list` and remove it with `devcrate delete <name>`.
 
