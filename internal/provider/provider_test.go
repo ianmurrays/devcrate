@@ -36,6 +36,7 @@ echo '{"state":"running","host":"10.0.0.1","user":"root","port":2222,"self_stop_
 		Options:       map[string]any{"region": "ams3"},
 		SSHPublicKey:  "ssh-ed25519 AAAA",
 		UserData:      "#!/bin/sh\n",
+		BaseName:      "api-base",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +59,7 @@ echo '{"state":"running","host":"10.0.0.1","user":"root","port":2222,"self_stop_
 		"options":        map[string]any{"region": "ams3"},
 		"ssh_public_key": "ssh-ed25519 AAAA",
 		"user_data":      "#!/bin/sh\n",
+		"base_name":      "api-base",
 	}
 	if a, b := mustJSON(sent), mustJSON(want); a != b {
 		t.Errorf("stdin = %s, want %s", a, b)

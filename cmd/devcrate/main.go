@@ -225,6 +225,11 @@ func up(flags map[string]string, args []string) error {
 	if err := env.installAgent(client, res, selfStop); err != nil {
 		return fmt.Errorf("installing the Agent: %w", err)
 	}
+	// On the volume, so later commands can read it from the VM even outside
+	// the clone.
+	if err := remote.Run(client, "cat > /var/lib/devcrate/base-name", strings.NewReader(env.baseName()), os.Stdout, os.Stderr); err != nil {
+		return fmt.Errorf("recording the base name: %w", err)
+	}
 
 	// setup.sh runs the user's script from here. 0600: /run/devcrate is
 	// traversable by everyone (creds.sh).
@@ -570,7 +575,17 @@ func (e *environment) request() provider.Request {
 		Options:       e.options,
 		SSHPublicKey:  e.key.AuthorizedKey,
 		UserData:      userData,
+		BaseName:      e.baseName(),
 	}
+}
+
+// baseName is the base name, or the Environment name when there is no repo
+// context (`up <git-url>`, a bare name outside its clone).
+func (e *environment) baseName() string {
+	if e.base != "" {
+		return e.base
+	}
+	return e.Name
 }
 
 // config is the user config, ~/.config/devcrate/config.toml.
