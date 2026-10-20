@@ -342,6 +342,8 @@ devcrate removes its own state from the VM, and the Provider snapshots it and de
 devcrate save-image --delete [name]
 ```
 
+Outside the clone, `status` and `save-image --delete` find a worktree Environment's Base image through its volume while it is Ready. While it is Stopped they take the given name as the base name, so run them in the clone, or name the main Environment.
+
 ## Coding-assistant skill
 
 `skills/devcrate/SKILL.md` teaches a coding assistant such as Claude Code to set up and use an Environment for a repo. Install it in Claude Code:

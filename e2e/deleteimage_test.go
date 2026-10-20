@@ -128,3 +128,30 @@ func TestStatusShowsTheBaseImage(t *testing.T) {
 		t.Errorf("status --json = %q, want stopped with base_image %s created %s", r.Stdout, image, created)
 	}
 }
+
+func TestStatusAndSaveImageDeleteOutsideTheCloneUseTheVolumesBaseName(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	w := e.Worktree("feat", e.Name+"-feat")
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up exit %d", r.Code)
+	}
+	if r := e.Devcrate("save-image"); r.Code != 0 {
+		t.Fatalf("save-image exit %d", r.Code)
+	}
+	image := e.BaseImages()[0]
+	if r := w.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up in the linked worktree exit %d", r.Code)
+	}
+	elsewhere := t.TempDir()
+
+	if r := e.DevcrateIn(elsewhere, "status", "--provider", "fake", w.Name); !strings.Contains(r.Stdout, image) {
+		t.Errorf("status of the worktree Environment outside the clone = %q, want its repo's Base image %s", r.Stdout, image)
+	}
+	if r := e.DevcrateIn(elsewhere, "save-image", "--delete", "--provider", "fake", w.Name); r.Code != 0 || !strings.Contains(r.Stdout, "deleted the Base image of "+e.Name) {
+		t.Errorf("save-image --delete of the worktree Environment outside the clone = exit %d stdout %q, want the Base image of %s deleted", r.Code, r.Stdout, e.Name)
+	}
+	if imgs := e.BaseImages(); len(imgs) != 0 {
+		t.Errorf("Base images after save-image --delete outside the clone = %v, want none", imgs)
+	}
+}
