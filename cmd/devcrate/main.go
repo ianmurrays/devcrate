@@ -231,9 +231,7 @@ func up(flags map[string]string, args []string) error {
 	if err := env.installAgent(client, res, selfStop); err != nil {
 		return fmt.Errorf("installing the Agent: %w", err)
 	}
-	// On the volume, so later commands can read it from the VM even outside
-	// the clone.
-	if err := remote.Run(client, "cat > /var/lib/devcrate/base-name", strings.NewReader(env.baseName()), os.Stdout, os.Stderr); err != nil {
+	if err := remote.Run(client, "cat > "+baseNamePath, strings.NewReader(env.baseName()), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("recording the base name: %w", err)
 	}
 
@@ -409,25 +407,23 @@ func status(flags map[string]string, args []string) error {
 			return err
 		}
 		state, base = string(res.State), res.BaseImage
-		switch res.State {
-		case provider.NotFound:
+		if res.State == provider.NotFound {
 			state = "missing"
-		case provider.Running:
-			if client, ready := env.dialReady(res); ready {
-				state = "ready"
-				// Outside the clone, the request's base name may not be
-				// the repo's.
-				if name, err := readBaseName(client); err == nil && name != req.BaseName {
-					req.BaseName = name
-					res, err := env.provider.Status(req)
-					if err != nil {
-						client.Close()
-						return err
-					}
-					base = res.BaseImage
+		}
+		if client, ready := env.dialReady(res); ready {
+			state = "ready"
+			// Outside the clone, the request's base name may not be
+			// the repo's.
+			if name, err := readBaseName(client); err == nil && name != req.BaseName {
+				req.BaseName = name
+				res, err := env.provider.Status(req)
+				if err != nil {
+					client.Close()
+					return err
 				}
-				client.Close()
+				base = res.BaseImage
 			}
+			client.Close()
 		}
 	}
 	if flags["--json"] != "" {
@@ -444,11 +440,15 @@ func status(flags map[string]string, args []string) error {
 	return nil
 }
 
+// baseNamePath is where up records the base name: on the volume, so later
+// commands can read it from the VM even outside the clone.
+const baseNamePath = "/var/lib/devcrate/base-name"
+
 // readBaseName reads the base name up recorded on the volume of client's VM,
 // as a request has no repo context for a bare name outside its clone.
 func readBaseName(client *ssh.Client) (string, error) {
 	var base strings.Builder
-	if err := remote.Run(client, "cat /var/lib/devcrate/base-name", nil, &base, io.Discard); err != nil {
+	if err := remote.Run(client, "cat "+baseNamePath, nil, &base, io.Discard); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(base.String()), nil
