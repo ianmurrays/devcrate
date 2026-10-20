@@ -5,7 +5,8 @@
 #
 # An Environment <name> is a droplet and a block volume, both named
 # devcrate-<name> and tagged devcrate:<name>. A stopped Environment is its
-# volume with no droplet.
+# volume with no droplet. A repo's Base image is a droplet snapshot named
+# devcrate-base-<base_name>.
 set -eu
 
 die() {
@@ -32,6 +33,7 @@ image=$(opt image "")
 token=$(opt token "")
 
 name=$(printf '%s' "$req" | jq -r '.environment_id // ""')
+base_name=$(printf '%s' "$req" | jq -r '.base_name // ""')
 
 # for_env NAME points the functions below at Environment NAME.
 for_env() {
@@ -51,8 +53,21 @@ volume_id() {
 	printf '%s' "$out" | jq -r --arg t "$tag" '[(. // [])[] | select((.tags // []) | index($t))][0].id // empty'
 }
 
-# status prints the contract's status object.
+# base_images prints base_name's Base images as a JSON array, newest first.
+base_images() {
+	[ -n "$base_name" ] || { echo '[]'; return; }
+	out=$(doctl compute snapshot list --resource droplet -o json)
+	printf '%s' "$out" | jq -c --arg n "devcrate-base-$base_name" '[(. // [])[] | select(.name == $n)] | sort_by(.created_at) | reverse'
+}
+
+# status prints the contract's status object, with the Base image up boots
+# from.
 status() {
+	base=$(base_images | jq -c '.[0] // empty | {id, created: .created_at}')
+	env_status | jq -c --argjson b "${base:-null}" 'if $b then . + {base_image: $b} else . end'
+}
+
+env_status() {
 	d=$(droplets)
 	if [ "$(printf '%s' "$d" | jq length)" -gt 0 ]; then
 		printf '%s' "$d" | jq -c '.[0] |
@@ -119,6 +134,15 @@ up() {
 		ud=$(mktemp)
 		trap 'rm -f "$ud"' EXIT
 		user_data > "$ud"
+		# The Base image comes first, if it is in the region.
+		base=$(base_images | jq -c '.[0] // empty')
+		if [ -n "$base" ]; then
+			if printf '%s' "$base" | jq -e --arg r "$region" '.regions | index($r)' >/dev/null; then
+				image=$(printf '%s' "$base" | jq -r .id)
+			else
+				echo "digitalocean: warning: the Base image $(printf '%s' "$base" | jq -r .id) is not available in $region, using the image option" >&2
+			fi
+		fi
 		# No image means no --image, so doctl itself says it is required.
 		set --
 		if [ -n "$image" ]; then
@@ -132,7 +156,7 @@ up() {
 	fi
 	# A droplet another up is still creating: wait for it (up to 5 min).
 	i=0
-	while s=$(status) && [ "$(printf '%s' "$s" | jq -r .state)" = busy ] && [ "$i" -lt 60 ]; do
+	while s=$(env_status) && [ "$(printf '%s' "$s" | jq -r .state)" = busy ] && [ "$i" -lt 60 ]; do
 		i=$((i + 1))
 		sleep 5
 	done
@@ -166,12 +190,38 @@ delete() {
 	fi
 }
 
+# save_image shuts the droplet down, snapshots it as base_name's Base image,
+# deletes the older ones once it is complete, then stops the Environment.
+save_image() {
+	[ -n "$base_name" ] || die "save-image: the request has no base_name"
+	if [ "$(printf '%s' "$req" | jq -r '.check // false')" = true ]; then
+		droplets >/dev/null # doctl is logged in
+		return
+	fi
+	if [ "$(printf '%s' "$req" | jq -r '.delete // false')" = true ]; then
+		for id in $(base_images | jq -r '.[].id'); do
+			doctl compute snapshot delete "$id" --force >&2
+		done
+		return
+	fi
+	id=$(droplets | jq -r '.[0].id // empty')
+	[ -n "$id" ] || die "save-image: $name has no droplet"
+	echo "digitalocean: powering off the droplet" >&2
+	doctl compute droplet-action power-off "$id" --wait -o json >/dev/null
+	echo "digitalocean: saving the Base image (this can take several minutes)" >&2
+	doctl compute droplet-action snapshot "$id" --snapshot-name "devcrate-base-$base_name" --wait -o json >/dev/null
+	for old in $(base_images | jq -r '.[1:][].id'); do
+		doctl compute snapshot delete "$old" --force >&2
+	done
+	stop
+}
+
 # list: every Environment has a volume (a stopped one has nothing else).
 list() {
 	out=$(doctl compute volume list -o json)
 	for env in $(printf '%s' "$out" | jq -r '(. // [])[] | (.tags // [])[] | select(startswith("devcrate:")) | ltrimstr("devcrate:")' | sort -u); do
 		for_env "$env"
-		status | jq -c --arg e "$env" '{environment_id: $e, state: .state}'
+		env_status | jq -c --arg e "$env" '{environment_id: $e, state: .state}'
 	done | jq -cs .
 }
 
@@ -200,5 +250,6 @@ stop) stop ;;
 delete) delete ;;
 list) list ;;
 self-stop) self_stop ;;
+save-image) save_image ;;
 *) die "unknown verb \"$verb\"" ;;
 esac

@@ -14,11 +14,11 @@ import (
 )
 
 // TestLiveSmoke runs devcrate against a real DigitalOcean account. It creates
-// a droplet and a volume (billed) and deletes them at the end. It is skipped
+// a droplet, a volume and a Base image (billed) and deletes them at the end. It is skipped
 // unless all of these are set:
 //
 //	DIGITALOCEAN_ACCESS_TOKEN  full-access token doctl uses (HOME is isolated)
-//	DEVCRATE_DO_SMOKE_IMAGE    snapshot ID of the base image (README.md)
+//	DEVCRATE_DO_SMOKE_IMAGE    snapshot ID of an image with Docker (README.md)
 //	DEVCRATE_DO_SMOKE_TOKEN    the droplet:delete Self-stop token
 //	DEVCRATE_DO_SMOKE_REPO     public https git URL of a repo with a devcontainer.json
 //
@@ -119,10 +119,12 @@ func TestLiveSmoke(t *testing.T) {
 	run("git", "init", "-q")
 	run("git", "remote", "add", "origin", os.Getenv("DEVCRATE_DO_SMOKE_REPO"))
 	t.Cleanup(func() {
-		cmd := exec.Command(filepath.Join(bin, "devcrate"), "delete", "--yes")
-		cmd.Dir, cmd.Env = dir, env
-		out, _ := cmd.CombinedOutput()
-		t.Logf("cleanup: devcrate delete --yes:\n%s", out)
+		for _, args := range [][]string{{"delete", "--yes"}, {"save-image", "--delete"}} {
+			cmd := exec.Command(filepath.Join(bin, "devcrate"), args...)
+			cmd.Dir, cmd.Env = dir, env
+			out, _ := cmd.CombinedOutput()
+			t.Logf("cleanup: devcrate %s:\n%s", strings.Join(args, " "), out)
+		}
 	})
 
 	// 1. up to Ready.
@@ -152,13 +154,38 @@ func TestLiveSmoke(t *testing.T) {
 		t.Errorf("devcontainer after resume = %q, want the same container %q", again, container)
 	}
 
-	// 4. delete leaves no droplet, volume or tag behind.
+	// 4. save-image leaves the Environment Stopped with its volume, and up
+	// boots from the Base image to Ready.
+	devcrate("save-image")
+	if droplets() != 0 || volumes() != 1 {
+		t.Fatalf("after save-image: %d droplets, %d volumes; want 0 and 1", droplets(), volumes())
+	}
+	start = time.Now()
+	devcrate("up")
+	t.Logf("UP FROM THE BASE IMAGE TOOK %s", time.Since(start).Round(time.Second))
+	if st := devcrate("status"); !strings.HasPrefix(st, "ready\nbase image: ") {
+		t.Errorf("status after up from the Base image = %q, want ready with a base image", st)
+	}
+	d := doctlJSON("compute", "droplet", "list", "--tag-name", tag)
+	if img, _ := d[0]["image"].(map[string]any); img["name"] != "devcrate-base-"+name {
+		t.Errorf("droplet booted from image %v, want devcrate-base-%s", img["name"], name)
+	}
+	devcrate("ssh", "--", "test -f /var/lib/devcrate/workspace/.devcrate-smoke")
+
+	// 5. delete leaves no droplet, volume or tag behind; the Base image stays
+	// until save-image --delete.
 	devcrate("delete", "--yes")
 	if droplets() != 0 || volumes() != 0 {
 		t.Errorf("after delete: %d droplets, %d volumes tagged %s", droplets(), volumes(), tag)
 	}
 	if err := exec.Command("doctl", "compute", "tag", "get", tag).Run(); err == nil {
 		t.Errorf("tag %s still exists after delete", tag)
+	}
+	devcrate("save-image", "--delete")
+	for _, s := range doctlJSON("compute", "snapshot", "list", "--resource", "droplet") {
+		if s["name"] == "devcrate-base-"+name {
+			t.Errorf("Base image %v left after save-image --delete", s["id"])
+		}
 	}
 }
 
