@@ -110,7 +110,7 @@ func TestStatusShowsTheBaseImage(t *testing.T) {
 	}
 	created := strings.TrimSpace(string(out))
 
-	if r := e.Devcrate("status"); r.Stdout != "stopped\nbase image: "+image+" (created "+created+")\n" {
+	if r := e.Devcrate("status"); r.Stdout != "stopped\nBase image: "+image+" (created "+created+")\n" {
 		t.Errorf("status with a Base image = %q, want it after the state", r.Stdout)
 	}
 	var got struct {

@@ -163,8 +163,8 @@ func TestLiveSmoke(t *testing.T) {
 	start = time.Now()
 	devcrate("up")
 	t.Logf("UP FROM THE BASE IMAGE TOOK %s", time.Since(start).Round(time.Second))
-	if st := devcrate("status"); !strings.HasPrefix(st, "ready\nbase image: ") {
-		t.Errorf("status after up from the Base image = %q, want ready with a base image", st)
+	if st := devcrate("status"); !strings.HasPrefix(st, "ready\nBase image: ") {
+		t.Errorf("status after up from the Base image = %q, want ready with a Base image", st)
 	}
 	d := doctlJSON("compute", "droplet", "list", "--tag-name", tag)
 	if img, _ := d[0]["image"].(map[string]any); img["name"] != "devcrate-base-"+name {

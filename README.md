@@ -231,7 +231,7 @@ A repo you `up` is trusted with root on its VM (`docs/adr/0005-repos-are-trusted
 
 devcrate does not install `gh`. Install it from a [setup script](#setup-scripts) and authenticate it with a forwarded [credential](#credentials).
 
-On the VM, install it from GitHub's apt repository in your user script. Only `/root` is on the volume, so the root disk outside it is fresh on every resume and the script installs `gh` again then; bake it into your Provider's base image to skip that.
+On the VM, install it from GitHub's apt repository in your user script. Only `/root` is on the volume, so the root disk outside it is fresh on every resume and the script installs `gh` again then; save the repo's [Base image](#base-image) to skip that.
 
 ```sh
 # ~/.config/devcrate/setup.sh

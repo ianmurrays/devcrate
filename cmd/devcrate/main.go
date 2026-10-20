@@ -439,7 +439,7 @@ func status(flags map[string]string, args []string) error {
 	}
 	fmt.Println(state)
 	if base != nil {
-		fmt.Printf("base image: %s (created %s)\n", base.ID, base.Created)
+		fmt.Printf("Base image: %s (created %s)\n", base.ID, base.Created)
 	}
 	return nil
 }
