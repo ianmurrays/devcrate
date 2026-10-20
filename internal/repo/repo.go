@@ -74,6 +74,15 @@ func Load(dir string) (*Context, error) {
 		return nil, err
 	}
 	c.Root = root
+	if linked, err := isLinkedWorktree(dir); err != nil {
+		return nil, err
+	} else if linked {
+		// A linked worktree gets its own Environment (ADR 0008).
+		c.Name += "-" + invalidNameChars.ReplaceAllString(strings.ToLower(filepath.Base(root)), "-")
+		if !validName.MatchString(c.Name) {
+			return nil, fmt.Errorf("this worktree's Environment name %q is longer than 32 characters: pick a shorter one with devcrate up --name <name>", c.Name)
+		}
+	}
 	return c, nil
 }
 
@@ -164,4 +173,25 @@ func git(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+var invalidNameChars = regexp.MustCompile(`[^a-z0-9-]`)
+
+// isLinkedWorktree reports whether dir is in a linked git worktree rather
+// than the main one: a linked worktree's git dir is not the common one.
+func isLinkedWorktree(dir string) (bool, error) {
+	var dirs [2]string
+	for i, flag := range []string{"--git-dir", "--git-common-dir"} {
+		d, err := git(dir, "rev-parse", flag)
+		if err != nil {
+			return false, fmt.Errorf("git rev-parse %s: %w", flag, err)
+		}
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(dir, d)
+		}
+		if dirs[i], err = filepath.EvalSymlinks(d); err != nil {
+			return false, err
+		}
+	}
+	return dirs[0] != dirs[1], nil
 }
