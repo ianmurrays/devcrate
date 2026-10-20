@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 
 	"github.com/ianmurrays/devcrate/internal/provider"
@@ -35,12 +36,14 @@ var (
 	userDataSh string
 	//go:embed repofiles.sh
 	repoFilesSh string
+	//go:embed scrub.sh
+	scrubScript string
 	// Both put the volume's state in place with volume.sh's function.
 	setupScript = volumeScript + repoFilesSh + setupSh
 	userData    = volumeScript + userDataSh
 )
 
-const usage = "usage: devcrate up [--rebuild] [--name <name>] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
+const usage = "usage: devcrate up [--rebuild] [--name <name>] [git-url] | stop [name] | save-image [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -64,6 +67,8 @@ func run(args []string) error {
 		cmd, allowed = up, append(allowed, "--rebuild", "--name=")
 	case "stop":
 		cmd = stop
+	case "save-image":
+		cmd = saveImage
 	case "delete":
 		cmd, allowed = del, append(allowed, "--yes")
 	case "status":
@@ -279,6 +284,60 @@ func stop(flags map[string]string, args []string) error {
 	return nil
 }
 
+// saveImage saves a Ready Environment's root disk as its repo's Base image,
+// leaving it Stopped (ADR 0009).
+func saveImage(flags map[string]string, args []string) error {
+	env, err := resolve(flags["--provider"], args)
+	if err != nil {
+		return err
+	}
+	if env.provider == nil {
+		return env.missing()
+	}
+	unlock, err := lock(env.Name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	res, err := env.provider.Status(env.request())
+	if err != nil {
+		return err
+	}
+	client, ready := env.dialReady(res)
+	if !ready {
+		return fmt.Errorf("%s is not Ready: run devcrate up first", env.Name)
+	}
+	defer client.Close()
+
+	// Read from the volume, as the request has no repo context for a bare
+	// name.
+	var base strings.Builder
+	if err := remote.Run(client, "cat /var/lib/devcrate/base-name", nil, &base, os.Stderr); err != nil {
+		return fmt.Errorf("reading %s's base name: %w: run devcrate up first", env.Name, err)
+	}
+	req := env.request()
+	req.BaseName = strings.TrimSpace(base.String())
+	req.Check = true
+	var stderr strings.Builder
+	check := *env.provider
+	check.Stderr = &stderr
+	if err := check.SaveImage(req); err != nil {
+		return fmt.Errorf("provider %s does not support save-image: %s", env.provider.Name, strings.TrimSpace(stderr.String()))
+	}
+
+	fmt.Printf("saving the Base image of %s…\n", env.Name)
+	if err := remote.Run(client, "sh -s", strings.NewReader(scrubScript), os.Stdout, os.Stderr); err != nil {
+		return fmt.Errorf("removing devcrate's state from %s: %w: run devcrate up to recover it", env.Name, err)
+	}
+	req.Check = false
+	if err := env.provider.SaveImage(req); err != nil {
+		return fmt.Errorf("%w: run devcrate up to recover %s", err, env.Name)
+	}
+	// The host key pin stays, as on stop: the host keys live on the volume.
+	fmt.Printf("saved the Base image of %s; %s is stopped\n", req.BaseName, env.Name)
+	return nil
+}
+
 // del removes the VM and the volume, after a y/N prompt unless --yes.
 func del(flags map[string]string, args []string) error {
 	env, err := resolve(flags["--provider"], args)
@@ -331,10 +390,8 @@ func status(flags map[string]string, args []string) error {
 		case provider.NotFound:
 			state = "missing"
 		case provider.Running:
-			if client, err := env.dial(res, 0); err == nil {
-				if remote.Run(client, "test -f /run/devcrate/ready", nil, nil, nil) == nil {
-					state = "ready"
-				}
+			if client, ready := env.dialReady(res); ready {
+				state = "ready"
 				client.Close()
 			}
 		}
@@ -344,6 +401,22 @@ func status(flags map[string]string, args []string) error {
 	}
 	fmt.Println(state)
 	return nil
+}
+
+// dialReady connects to the VM res when the Environment is Ready.
+func (e *environment) dialReady(res provider.Result) (*ssh.Client, bool) {
+	if res.State != provider.Running {
+		return nil, false
+	}
+	client, err := e.dial(res, 0)
+	if err != nil {
+		return nil, false
+	}
+	if remote.Run(client, "test -f /run/devcrate/ready", nil, nil, nil) != nil {
+		client.Close()
+		return nil, false
+	}
+	return client, true
 }
 
 // list prints every Environment of every known Provider: the current repo's

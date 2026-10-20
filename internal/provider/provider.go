@@ -28,6 +28,9 @@ type Request struct {
 	// BaseName is the repo's base Environment name, shared by its worktree
 	// Environments: what its Base image is labelled with.
 	BaseName string `json:"base_name"`
+	// Check (save-image only) asks the Provider to validate that it can
+	// save, changing nothing.
+	Check bool `json:"check,omitempty"`
 }
 
 // State is an Environment's state as a Provider reports it.
@@ -103,6 +106,11 @@ func (p *Provider) Stop(req Request) error { return p.run("stop", req, nil) }
 
 // Delete removes everything the Environment owns. Its stdout is ignored.
 func (p *Provider) Delete(req Request) error { return p.run("delete", req, nil) }
+
+// SaveImage saves the Environment's root disk as the Base image for
+// BaseName and destroys its VM, keeping the volume (ADR 0009). Its stdout is
+// ignored.
+func (p *Provider) SaveImage(req Request) error { return p.run("save-image", req, nil) }
 
 // SelfStop returns the Provider's self-stop script, which devcrate copies to
 // the VM for the Agent to run with self_stop_env sourced. The verb prints

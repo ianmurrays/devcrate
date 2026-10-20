@@ -326,6 +326,16 @@ devcrate-agent keep-alive 2h         # on the VM, e.g. from a script
 
 The duration is Go-style (`90s`, `30m`, `2h30m`). The hold ends on its own: the Environment then stops after a further `idle_timeout` with nobody connected. Each call replaces the previous hold, so a shorter one cuts it short. The hold lives in tmpfs (`/run/devcrate/keep-alive`), so a reboot or Stop drops it. `devcrate keep-alive` never starts a stopped Environment and fails like `devcrate ssh` does.
 
+## Base image
+
+Every `up` after a Stop boots a new VM, so whatever setup installed outside `/var/lib/devcrate` (Docker, the devcontainer CLI, what your setup scripts put on the VM) is installed again. Save a Ready Environment's root disk as the repo's Base image to skip that:
+
+```sh
+devcrate save-image [name]
+```
+
+devcrate removes its own state from the VM, and the Provider snapshots it and destroys the VM, keeping the volume: the Environment ends Stopped, as after `devcrate stop`. From then on, every `up` of the repo's Environments, its worktree Environments included, boots from the Base image. Setup still runs on every `up`, so your setup scripts must stay idempotent. Saving again, from any of the repo's Environments, replaces the Base image. `save-image` refuses an Environment that is not Ready, and fails before touching the VM when the Provider does not support it.
+
 ## Coding-assistant skill
 
 `skills/devcrate/SKILL.md` teaches a coding assistant such as Claude Code to set up and use an Environment for a repo. Install it in Claude Code:
