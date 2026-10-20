@@ -457,6 +457,53 @@ func TestSaveImageReplacesTheBaseImageAndStops(t *testing.T) {
 	}
 }
 
+func TestSaveImageDeletesThePreviousBaseImageOnlyOnceTheNewOneIsComplete(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.saveImage("api", "api", nil)
+	old := f.cloud().Snapshots[0]
+	f.ok("up", "api", opts, nil)
+	if r := f.saveImage("api", "api", nil); r.Code != 0 {
+		t.Fatalf("save-image: exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	if c := f.cloud(); !slices.Equal(c.Deleted, []deletion{{ID: old.ID, NewerComplete: true}}) {
+		t.Errorf("deleted snapshots = %+v, want only the old Base image %s, once the new one was complete", c.Deleted, old.ID)
+	}
+}
+
+// A sibling worktree's save that completes after this one keeps its Base
+// image, and this save keeps its own: the sibling's deletes it.
+func TestSaveImageKeepsANewerBaseImageASiblingSaved(t *testing.T) {
+	f := newFixture(t)
+	f.ok("up", "api", opts, nil)
+	f.saveImage("api", "api", nil)
+	old := f.cloud().Snapshots[0]
+	f.ok("up", "api", opts, nil)
+	req := map[string]any{"environment_id": "api", "base_name": "api", "options": opts}
+	if r := f.request("save-image", req, "FAKE_SIBLING_SAVE=1"); r.Code != 0 {
+		t.Fatalf("save-image: exit %d, stderr %q", r.Code, r.Stderr)
+	}
+	c := f.cloud()
+	if len(c.Snapshots) != 2 || c.Snapshots[1].ResourceID != "sibling" || !slices.Equal(c.Deleted, []deletion{{ID: old.ID, NewerComplete: true}}) {
+		t.Errorf("snapshots = %s, deleted %+v; want this save's and the sibling's, and only %s deleted", mustJSON(c.Snapshots), c.Deleted, old.ID)
+	}
+}
+
+func TestUpBootsFromTheNewestOfTwoBaseImages(t *testing.T) {
+	f := newFixture(t)
+	c := f.cloud()
+	older := c.addSnapshot("devcrate-base-api", "nyc3", "1")
+	newest := c.addSnapshot("devcrate-base-api", "nyc3", "2")
+	c.addSnapshot("devcrate-base-web", "nyc3", "3")
+	// Listed out of order, so up must sort them.
+	c.Snapshots = []*snapshot{c.Snapshots[2], newest, older}
+	c.save(f.state)
+	f.ok("up", "api", opts, nil)
+	if d := f.cloud().Droplets[0]; d.Image != newest.ID {
+		t.Errorf("droplet booted from %s, want the newest Base image %s", d.Image, newest.ID)
+	}
+}
+
 // A snapshot that fails leaves the previous Base image, and the droplet off
 // for devcrate up to power on again.
 func TestFailedSaveImageKeepsThePreviousBaseImage(t *testing.T) {

@@ -13,6 +13,8 @@
 // and status reports it.
 //
 // Test plumbing: the option `fail = "<verb>"` makes that verb fail, and
+// `unknown = "<verb>"` makes it fail as an unknown verb, as in a Provider
+// that does not implement it, and
 // `busy_while = "<host path>"` makes status report busy while that file exists.
 // `no_self_stop_env = true` makes up return no self_stop_env and self-stop
 // fail, as when no Self-stop credential is configured, and
@@ -77,6 +79,9 @@ func main() {
 	if req.Options["fail"] == verb {
 		fail("failing %s as asked", verb)
 	}
+	if req.Options["unknown"] == verb {
+		verb = ""
+	}
 	var out any
 	switch verb {
 	case "up":
@@ -129,7 +134,7 @@ func main() {
 		}
 		return
 	default:
-		fail("unknown verb %q", verb)
+		fail("unknown verb %q", os.Args[1])
 	}
 	json.NewEncoder(os.Stdout).Encode(out)
 }

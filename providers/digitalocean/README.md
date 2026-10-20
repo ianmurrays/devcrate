@@ -18,7 +18,7 @@ provider = "digitalocean"
 ```toml
 # ~/.config/devcrate/config.toml
 [providers.digitalocean]
-image = "123456789"   # a snapshot with Docker (see "The base image")
+image = "123456789"   # a snapshot with Docker (see "The Base image")
 token = "dop_v1_..."  # the Self-stop token (see below)
 ```
 
@@ -39,7 +39,7 @@ The first `up` imports devcrate's public key (`~/.config/devcrate/id_ed25519.pub
 
 | Option | Default | |
 | --- | --- | --- |
-| `image` | none, required | Snapshot ID of the image to boot from when the repo has no Base image in `region` (see [The base image](#the-base-image)), passed to `doctl compute droplet create --image`. Without it `up` fails with doctl's error; there is no fallback to stock Ubuntu. |
+| `image` | none, required | Snapshot ID of the image to boot from when the repo has no Base image in `region` (see [The Base image](#the-base-image)), passed to `doctl compute droplet create --image`. Without it `up` fails with doctl's error; there is no fallback to stock Ubuntu. |
 | `region` | `nyc3` | Region slug. The volume and every droplet of an Environment live in the region its volume was created in; changing `region` later makes `up` fail. The `image` snapshot must be available there (see `image-action transfer` below). |
 | `size` | `s-2vcpu-4gb` | Droplet size slug. 4 GB of memory is enough to build most devcontainers; 1-2 GB droplets run out building Node or Rust images. Change it any time: it applies from the next `up` after a Stop. |
 | `volume_size` | `50` | Volume size in GiB, used only when the volume is created. |
@@ -58,7 +58,7 @@ devcrate writes it to a root-only file on the droplet's tmpfs (`/run/devcrate/se
 
 > **Warning:** DigitalOcean cannot scope a token to one droplet. This token can delete **every droplet in the team**, not just devcrate's. Anyone who gets root on an Environment (including any code you run there) can read it. Use a dedicated team for devcrate if that matters to you, and revoke the token in the control panel if a droplet may have been compromised.
 
-## The base image
+## The Base image
 
 devcrate expects the droplet to come up with Docker (29 or newer) and the devcontainer CLI (0.80.0 or newer, at `/opt/devcontainers`) already installed. `up` installs either one if it is missing, but on every resume of a fresh droplet that costs a minute or more. Save a Ready Environment as the repo's Base image instead (see [Base image](../../README.md#base-image)):
 

@@ -191,7 +191,8 @@ delete() {
 }
 
 # save_image shuts the droplet down, snapshots it as base_name's Base image,
-# deletes the older ones once it is complete, then stops the Environment.
+# deletes the ones created before it once it is complete, then stops the
+# Environment.
 save_image() {
 	[ -n "$base_name" ] || die "save-image: the request has no base_name"
 	if [ "$(printf '%s' "$req" | jq -r '.check // false')" = true ]; then
@@ -210,8 +211,11 @@ save_image() {
 	doctl compute droplet-action power-off "$id" --wait -o json >/dev/null
 	echo "digitalocean: saving the Base image (this can take several minutes)" >&2
 	doctl compute droplet-action snapshot "$id" --snapshot-name "devcrate-base-$base_name" --wait -o json >/dev/null
-	for old in $(base_images | jq -r '.[1:][].id'); do
-		doctl compute snapshot delete "$old" --force >&2
+	# Not a newer one, which a sibling worktree's save may be making.
+	old=$(base_images)
+	snap=$(printf '%s' "$old" | jq -c --arg d "$id" '[.[] | select(.resource_id == $d)][0]')
+	for s in $(printf '%s' "$old" | jq -r --argjson n "$snap" '.[] | select(.id != $n.id and .created_at <= $n.created_at) | .id'); do
+		doctl compute snapshot delete "$s" --force >&2
 	done
 	stop
 }

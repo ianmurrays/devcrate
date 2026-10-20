@@ -7,7 +7,7 @@ An Environment `<name>` is an instance named `devcrate-<name>` and tagged `devcr
 - `up` creates the volume if it is missing, then an instance, waits for it to be active, and attaches the volume live (or starts an instance that is halted). It then mints the Self-stop key (see [Idle stop](#idle-stop)).
 - `stop` destroys the instance and keeps the volume, which Vultr detaches by itself. A stopped Environment costs only the volume's storage (see [Cost](#cost)).
 - `delete` destroys the instance and the volume, and the Self-stop service user, policy and key.
-- `save-image` saves the repo's Base image from the instance and destroys it, keeping the volume (see [The base image](#the-base-image)).
+- `save-image` saves the repo's Base image from the instance and destroys it, keeping the volume (see [The Base image](#the-base-image)).
 - `status` reads the instance by tag and the volume by label, and returns the Base image `up` boots from. `list` reads every volume labelled `devcrate-*`, since a stopped Environment has nothing else.
 
 ```toml
@@ -58,12 +58,12 @@ The first `up` imports devcrate's public key (`~/.config/devcrate/id_ed25519.pub
 | --- | --- | --- |
 | `region` | none, required | Region ID, such as `ewr` or `ams`. It must offer NVMe block storage (`block_storage_high_perf` in `GET /v2/regions`); in a region that only has HDD block storage, `up` fails with `vultr: region "<id>" has no NVMe block storage (high_perf)`. The volume and every instance of an Environment live in the region its volume was created in; changing `region` later makes `up` fail. |
 | `plan` | `vc2-2c-4gb` | Instance plan. 4 GB of memory is enough to build most devcontainers. Change it any time: it applies from the next `up` after a Stop. |
-| `image` | the newest x64 Ubuntu LTS | Snapshot ID of an account-wide image (see [The base image](#the-base-image)), passed as `snapshot_id`. The repo's Base image takes precedence over it. Without either, the instance runs the newest `Ubuntu NN.04 LTS x64` from `GET /v2/os`. |
+| `image` | the newest x64 Ubuntu LTS | Snapshot ID of an account-wide image (see [The Base image](#the-base-image)), passed as `snapshot_id`. The repo's Base image takes precedence over it. Without either, the instance runs the newest `Ubuntu NN.04 LTS x64` from `GET /v2/os`. |
 | `volume_size` | `50` | Volume size in GB (10 to 10000), used only when the volume is created. |
 
 There is no `token` option: the Provider uses your API key, and mints Self-stop's own key (see [Idle stop](#idle-stop)).
 
-## The base image
+## The Base image
 
 devcrate expects the instance to come up with Docker (29 or newer) and the devcontainer CLI (0.80.0 or newer, at `/opt/devcontainers`) installed. `up` installs either one if it is missing, so stock Ubuntu works, but on every resume of a fresh instance that costs a minute or more, as does whatever your setup scripts install on the VM, such as the [GitHub CLI](../../README.md#github-cli). Save the repo's [Base image](../../README.md#base-image) to skip that:
 

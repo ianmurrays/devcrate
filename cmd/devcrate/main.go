@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -230,9 +231,7 @@ func up(flags map[string]string, args []string) error {
 	if err := env.installAgent(client, res, selfStop); err != nil {
 		return fmt.Errorf("installing the Agent: %w", err)
 	}
-	// On the volume, so later commands can read it from the VM even outside
-	// the clone.
-	if err := remote.Run(client, "cat > /var/lib/devcrate/base-name", strings.NewReader(env.baseName()), os.Stdout, os.Stderr); err != nil {
+	if err := remote.Run(client, "cat > "+baseNamePath, strings.NewReader(env.baseName()), os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("recording the base name: %w", err)
 	}
 
@@ -295,10 +294,19 @@ func saveImage(flags map[string]string, args []string) error {
 		return env.missing()
 	}
 	if flags["--delete"] != "" {
-		// ponytail: the base name comes from the repo context, so a worktree
-		// Environment's bare name outside its clone deletes nothing; read it
-		// from the volume if that case matters.
+		// Outside the clone, a Stopped worktree Environment's base name is
+		// its own name, which deletes nothing; up it first.
 		req := env.request()
+		res, err := env.provider.Status(req)
+		if err != nil {
+			return err
+		}
+		if client, ready := env.dialReady(res); ready {
+			if base, err := readBaseName(client); err == nil {
+				req.BaseName = base
+			}
+			client.Close()
+		}
 		req.Delete = true
 		if err := env.provider.SaveImage(req); err != nil {
 			return err
@@ -321,14 +329,12 @@ func saveImage(flags map[string]string, args []string) error {
 	}
 	defer client.Close()
 
-	// Read from the volume, as the request has no repo context for a bare
-	// name.
-	var base strings.Builder
-	if err := remote.Run(client, "cat /var/lib/devcrate/base-name", nil, &base, os.Stderr); err != nil {
+	base, err := readBaseName(client)
+	if err != nil {
 		return fmt.Errorf("reading %s's base name: %w: run devcrate up first", env.Name, err)
 	}
 	req := env.request()
-	req.BaseName = strings.TrimSpace(base.String())
+	req.BaseName = base
 	req.Check = true
 	var stderr strings.Builder
 	check := *env.provider
@@ -395,19 +401,29 @@ func status(flags map[string]string, args []string) error {
 	state := "missing"
 	var base *provider.BaseImage
 	if env.provider != nil {
-		res, err := env.provider.Status(env.request())
+		req := env.request()
+		res, err := env.provider.Status(req)
 		if err != nil {
 			return err
 		}
 		state, base = string(res.State), res.BaseImage
-		switch res.State {
-		case provider.NotFound:
+		if res.State == provider.NotFound {
 			state = "missing"
-		case provider.Running:
-			if client, ready := env.dialReady(res); ready {
-				state = "ready"
-				client.Close()
+		}
+		if client, ready := env.dialReady(res); ready {
+			state = "ready"
+			// Outside the clone, the request's base name may not be
+			// the repo's.
+			if name, err := readBaseName(client); err == nil && name != req.BaseName {
+				req.BaseName = name
+				res, err := env.provider.Status(req)
+				if err != nil {
+					client.Close()
+					return err
+				}
+				base = res.BaseImage
 			}
+			client.Close()
 		}
 	}
 	if flags["--json"] != "" {
@@ -419,9 +435,23 @@ func status(flags map[string]string, args []string) error {
 	}
 	fmt.Println(state)
 	if base != nil {
-		fmt.Printf("base image: %s (created %s)\n", base.ID, base.Created)
+		fmt.Printf("Base image: %s (created %s)\n", base.ID, base.Created)
 	}
 	return nil
+}
+
+// baseNamePath is where up records the base name: on the volume, so later
+// commands can read it from the VM even outside the clone.
+const baseNamePath = "/var/lib/devcrate/base-name"
+
+// readBaseName reads the base name up recorded on the volume of client's VM,
+// as a request has no repo context for a bare name outside its clone.
+func readBaseName(client *ssh.Client) (string, error) {
+	var base strings.Builder
+	if err := remote.Run(client, "cat "+baseNamePath, nil, &base, io.Discard); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(base.String()), nil
 }
 
 // dialReady connects to the VM res when the Environment is Ready.
