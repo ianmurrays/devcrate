@@ -84,6 +84,14 @@ When `up` creates the Environment's clone, it checks out the branch your local c
 
 devcrate connects to VMs with its own SSH keypair, created on first use at `~/.config/devcrate/id_ed25519`.
 
+### Worktrees
+
+Each git worktree of a repo gets its own Environment, so parallel branches never share a disk. The main worktree uses `name` from `.devcrate.toml`, or else the repo name, as it always has. A linked worktree (`git worktree add`) uses that name plus `-` and the worktree directory's name, lowercased, with every character outside `a-z`, `0-9` and `-` replaced by `-`: a worktree at `../Fix_Login.2` of repo `my-app` gets `my-app-fix-login-2`. If that name is longer than 32 characters, `up` fails before creating anything. Every command run without a name inside a worktree (`up`, `ssh`, `status`, `stop`, `delete`, `keep-alive`, `forward`) acts on that worktree's Environment, and `devcrate list` shows them all.
+
+Two linked worktrees whose directories have the same name, such as `~/a/feat` and `~/b/feat` of one repo, share an Environment.
+
+Removing a worktree leaves its Environment, and its disk keeps billing: find it with `devcrate list` and remove it with `devcrate delete <name>`.
+
 ## Setup scripts
 
 Two scripts you write can install tools on an Environment. Both run in `up`'s SSH session, as root, on every `up`, so they must be idempotent: check before installing, and don't append to a file twice.
@@ -161,7 +169,7 @@ Some secrets must sit in the repo's working tree, ignored by git, such as Rails'
 bookster = ["config/credentials/test.key", "config/credentials/development.key"]
 ```
 
-On every `up` and `devcrate ssh` run in your local clone, devcrate copies each file to the same path in the VM's clone (`/var/lib/devcrate/workspace`), mode 0600, owned by the clone's owner. `up` copies them before `setup_script` and `devcontainer up`. A file missing from your clone is skipped with a warning. Run outside your clone, devcrate copies nothing and leaves the VM's copies as they are.
+In a linked worktree, list the worktree's Environment name (see [Worktrees](#worktrees)); its files are copied from that worktree. On every `up` and `devcrate ssh` run in your local clone, devcrate copies each file to the same path in the VM's clone (`/var/lib/devcrate/workspace`), mode 0600, owned by the clone's owner. `up` copies them before `setup_script` and `devcontainer up`. A file missing from your clone is skipped with a warning. Run outside your clone, devcrate copies nothing and leaves the VM's copies as they are.
 
 Unlike the other forwarded secrets, these are real files on the volume: containers that mount the clone, such as docker compose services, can read them without `/run/devcrate/creds`. So they survive a Stop, and only Delete removes them. Removing a path from the list does not remove its copy (`docs/adr/0007-repo-files-are-written-to-the-volume.md`).
 
