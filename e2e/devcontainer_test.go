@@ -220,3 +220,37 @@ func TestUpKeepsOtherDockerDaemonSettings(t *testing.T) {
 		t.Errorf("storage roots = %q exit %d, want both under /var/lib/devcrate", r.Stdout, r.Code)
 	}
 }
+
+// A Base image ships with Docker disabled, so its storage cannot land on the
+// root disk before the volume mounts: setup enables and starts it.
+func TestUpStartsDisabledDocker(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up exit %d", r.Code)
+	}
+	const pids = "systemctl show -p MainPID --value containerd docker"
+	before, _ := e.VM(pids)
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("second up exit %d", r.Code)
+	}
+	if after, _ := e.VM(pids); after != before {
+		t.Errorf("up restarted enabled Docker: MainPIDs %q, then %q", before, after)
+	}
+
+	if out, code := e.VM("systemctl disable --now docker docker.socket containerd"); code != 0 {
+		t.Fatalf("disabling Docker: %s", out)
+	}
+	if r := e.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up with Docker disabled exit %d\n%s", r.Code, r.Stderr)
+	}
+	units := "docker docker.socket containerd"
+	if out, code := e.VM("systemctl is-enabled " + units + " && systemctl is-active " + units); code != 0 {
+		t.Errorf("after up, Docker's units are not all enabled and active:\n%s", out)
+	}
+	// On the volume itself, not the root disk under its mount point.
+	r := e.Devcrate("ssh", "--", `findmnt -n -o TARGET -T "$(docker info -f '{{.DockerRootDir}}')"`)
+	if r.Code != 0 || r.Stdout != "/var/lib/devcrate\n" {
+		t.Errorf("Docker's data-root is on mount %q exit %d, want /var/lib/devcrate", r.Stdout, r.Code)
+	}
+}
