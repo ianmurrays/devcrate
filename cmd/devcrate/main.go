@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -147,7 +146,8 @@ func up(flags map[string]string, args []string) error {
 	}
 	// An Environment cannot be renamed: the worktree's stored one must go
 	// first, so it is never orphaned.
-	if name != "" && env.storedName != "" && env.storedName != name {
+	renaming := name != "" && name != env.storedName
+	if renaming && env.storedName != "" {
 		stored := *env
 		stored.Name = env.storedName
 		res, err := stored.provider.Status(stored.request())
@@ -190,7 +190,7 @@ func up(flags map[string]string, args []string) error {
 		}
 	}
 
-	if name != "" && name != env.storedName {
+	if renaming {
 		if err := repo.StoreName(env.root, name); err != nil {
 			return err
 		}
@@ -237,14 +237,7 @@ func up(flags map[string]string, args []string) error {
 	}
 
 	fmt.Println("running setup…")
-	// A new clone checks out the laptop checkout's branch: "HEAD" when it is
-	// detached, empty for `up <git-url>` (the default branch, no warning).
-	var branch string
-	if env.root != "" {
-		out, _ := exec.Command("git", "-C", env.root, "rev-parse", "--abbrev-ref", "HEAD").Output()
-		branch = strings.TrimSpace(string(out))
-	}
-	cmd := fmt.Sprintf("sh -s -- %s %t %s %t %t %s", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer, flags["--rebuild"] != "", shellQuote(branch))
+	cmd := fmt.Sprintf("sh -s -- %s %t %s %t %t %s", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer, flags["--rebuild"] != "", shellQuote(env.branch))
 	// Setup gets the laptop's agent, for the setup scripts, git and builds
 	// (and, through the Agent's relay, the devcontainer's lifecycle hooks).
 	agentSock, err := forwardAgent()
@@ -401,14 +394,17 @@ type environment struct {
 	Name   string
 	origin string // clone URL; empty when resolved outside a repo
 	root   string // the laptop clone; empty without one
-	base   string // the repo's Environment name, without a linked worktree's suffix
+	base   string // the base name: Name without a linked worktree's suffix, --name or the stored name
 	// storedName is the worktree's remembered name (repo.StoreName), "" when
 	// it has none.
 	storedName string
-	options    map[string]any // passed to the Provider unchanged
-	provider   *provider.Provider
-	key        *remote.Key
-	searched   []string // Providers asked when resolving a bare name
+	// branch is the laptop checkout's branch, for a new clone: "HEAD" when
+	// detached, "" for `up <git-url>` (the default branch, no warning).
+	branch   string
+	options  map[string]any // passed to the Provider unchanged
+	provider *provider.Provider
+	key      *remote.Key
+	searched []string // Providers asked when resolving a bare name
 	// devcontainer is false when the Environment is VM-only by choice.
 	devcontainer bool
 	// idleTimeout of continuous Idle makes the Agent Self-stop; 0 never.
@@ -479,7 +475,7 @@ func fromRepo(providerName, name string, url ...string) (*environment, error) {
 		return nil, err
 	}
 	return &environment{
-		Name: ctx.Name, storedName: ctx.StoredName, origin: ctx.Origin, root: ctx.Root, base: ctx.Base, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
+		Name: ctx.Name, storedName: ctx.StoredName, branch: ctx.Branch, origin: ctx.Origin, root: ctx.Root, base: ctx.Base, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
 		setupScript: ctx.SetupScript, userScript: userScript, userScriptInContainer: cfg.SetupScriptInContainer,
 		idleTimeout: idleTimeout,
 	}, nil

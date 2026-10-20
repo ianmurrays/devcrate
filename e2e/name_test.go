@@ -85,6 +85,10 @@ func TestUpNameWhileStoredEnvironmentExistsFails(t *testing.T) {
 	if y.ContainerID() != "" || y.VolumeExists() {
 		t.Errorf("bare up after replacing the name recreated %s", y.Name)
 	}
+	x.VM("echo x > /root/which")
+	if r := w.Devcrate("ssh", "--", "cat /root/which"); r.Stdout != "x\n" {
+		t.Errorf("bare ssh after replacing the name read %q exit %d, want %s's %q", r.Stdout, r.Code, x.Name, "x\n")
+	}
 }
 
 func TestUpNameInMainWorktreeWinsOverRepoConfig(t *testing.T) {
@@ -134,7 +138,7 @@ func TestUpNameFallsBackToTheRepoNamesRepoFiles(t *testing.T) {
 		t.Fatalf("up --name %s exit %d", x.Name, r.Code)
 	}
 	if out, _ := x.VM("cat /var/lib/devcrate/workspace/secret.key"); out != "linked" {
-		t.Errorf("%s's clone has secret.key = %q, want %q from the repo name's entry", x.Name, out, "linked")
+		t.Errorf("%s's clone has secret.key = %q, want %q from the base name's entry", x.Name, out, "linked")
 	}
 }
 

@@ -75,6 +75,10 @@ func TestNewEnvironmentStaysOnDefaultBranch(t *testing.T) {
 			setup:   func(e *Env) { e.git("checkout", "-q", "-b", "local-only") },
 			warning: "local-only",
 		},
+		"unborn branch": {
+			setup:   func(e *Env) { e.git("checkout", "-q", "--orphan", "unborn") },
+			warning: "unborn",
+		},
 		"detached HEAD": {
 			setup:   func(e *Env) { e.git("checkout", "-q", "--detach") },
 			warning: "detached HEAD",

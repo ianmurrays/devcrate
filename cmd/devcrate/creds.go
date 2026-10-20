@@ -47,8 +47,8 @@ const signingGitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-
 // credsArchive is a tar of env (sourceable exports), names (one forwarded
 // var per line), files/<path relative to $HOME>, git/ (the signing key and
 // signingGitConfig, or nothing) and repo/<path in the repo>: the Environment
-// name's forward_repo_files, else base's, from the laptop clone at root, or
-// nothing when root is "".
+// name's forward_repo_files, else the base name's, from the laptop clone at
+// root, or nothing when root is "".
 func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 	var env, names strings.Builder
 	for _, name := range c.ForwardEnv {
@@ -146,7 +146,7 @@ func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 			return nil, err
 		}
 		paths, ok := c.ForwardRepoFiles[name]
-		if !ok { // a linked worktree uses its repo's entry (ADR 0008)
+		if !ok { // fall back to the base name's entry (ADR 0008)
 			paths = c.ForwardRepoFiles[base]
 		}
 		for _, p := range paths {
