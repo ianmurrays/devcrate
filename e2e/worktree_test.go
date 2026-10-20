@@ -111,15 +111,35 @@ func TestLinkedWorktreeForwardsItsOwnRepoFiles(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
 	w := e.Worktree("feat", e.Name+"-feat")
-	// forward_repo_files is keyed by Environment name.
-	e.UserConfig("[forward_repo_files]\n" + w.Name + " = [\"secret.key\"]\n")
+	// forward_repo_files is keyed by Environment name; the worktree's own
+	// entry wins over the repo's.
+	e.UserConfig("[forward_repo_files]\n" + w.Name + " = [\"secret.key\"]\n" + e.Name + " = [\"base.key\"]\n")
 	e.WriteFile("secret.key", "main")
 	w.WriteFile("secret.key", "linked")
+	w.WriteFile("base.key", "base")
 	if r := w.Devcrate("up"); r.Code != 0 {
 		t.Fatalf("up in the linked worktree exit %d", r.Code)
 	}
 	if out, _ := w.VM("cat /var/lib/devcrate/workspace/secret.key"); out != "linked" {
 		t.Errorf("the linked worktree's clone has secret.key = %q, want the linked worktree's %q", out, "linked")
+	}
+	if _, code := w.VM("test -e /var/lib/devcrate/workspace/base.key"); code == 0 {
+		t.Error("the linked worktree's clone has base.key, listed only under the repo's Environment name")
+	}
+}
+
+func TestLinkedWorktreeFallsBackToTheBaseNamesRepoFiles(t *testing.T) {
+	t.Parallel()
+	e := NewEnv(t)
+	w := e.Worktree("feat", e.Name+"-feat")
+	// No entry for the worktree's Environment, so the repo's applies.
+	e.UserConfig("[forward_repo_files]\n" + e.Name + " = [\"secret.key\"]\n")
+	w.WriteFile("secret.key", "linked")
+	if r := w.Devcrate("up"); r.Code != 0 {
+		t.Fatalf("up in the linked worktree exit %d", r.Code)
+	}
+	if out, _ := w.VM("cat /var/lib/devcrate/workspace/secret.key"); out != "linked" {
+		t.Errorf("the linked worktree's clone has secret.key = %q, want %q from the base name's entry", out, "linked")
 	}
 }
 

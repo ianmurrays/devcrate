@@ -378,6 +378,7 @@ type environment struct {
 	Name     string
 	origin   string         // clone URL; empty when resolved outside a repo
 	root     string         // the laptop clone; empty without one
+	base     string         // the repo's Environment name, without a linked worktree's suffix
 	options  map[string]any // passed to the Provider unchanged
 	provider *provider.Provider
 	key      *remote.Key
@@ -452,7 +453,7 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 		return nil, err
 	}
 	return &environment{
-		Name: ctx.Name, origin: ctx.Origin, root: ctx.Root, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
+		Name: ctx.Name, origin: ctx.Origin, root: ctx.Root, base: ctx.Base, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
 		setupScript: ctx.SetupScript, userScript: userScript, userScriptInContainer: cfg.SetupScriptInContainer,
 		idleTimeout: idleTimeout,
 	}, nil
@@ -511,7 +512,7 @@ func resolve(providerName string, args []string) (*environment, error) {
 		}
 		e := &environment{Name: name, options: candidates[p], provider: prov, key: key, searched: searched}
 		if repoErr == nil && name == env.Name {
-			e.root = env.root // the current repo's Environment, by name
+			e.root, e.base = env.root, env.base // the current repo's Environment, by name
 		}
 		if providerName != "" {
 			return e, nil

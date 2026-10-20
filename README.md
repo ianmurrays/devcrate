@@ -169,7 +169,7 @@ Some secrets must sit in the repo's working tree, ignored by git, such as Rails'
 bookster = ["config/credentials/test.key", "config/credentials/development.key"]
 ```
 
-In a linked worktree, list the worktree's Environment name (see [Worktrees](#worktrees)); its files are copied from that worktree. On every `up` and `devcrate ssh` run in your local clone, devcrate copies each file to the same path in the VM's clone (`/var/lib/devcrate/workspace`), mode 0600, owned by the clone's owner. `up` copies them before `setup_script` and `devcontainer up`. A file missing from your clone is skipped with a warning. Run outside your clone, devcrate copies nothing and leaves the VM's copies as they are.
+A linked worktree's Environment (see [Worktrees](#worktrees)) uses the entry for its own name if there is one, else the repo's entry (`bookster` above applies to `bookster-feat` too); its files are copied from that worktree. On every `up` and `devcrate ssh` run in your local clone, devcrate copies each file to the same path in the VM's clone (`/var/lib/devcrate/workspace`), mode 0600, owned by the clone's owner. `up` copies them before `setup_script` and `devcontainer up`. A file missing from your clone is skipped with a warning. Run outside your clone, devcrate copies nothing and leaves the VM's copies as they are.
 
 Unlike the other forwarded secrets, these are real files on the volume: containers that mount the clone, such as docker compose services, can read them without `/run/devcrate/creds`. So they survive a Stop, and only Delete removes them. Removing a path from the list does not remove its copy (`docs/adr/0007-repo-files-are-written-to-the-volume.md`).
 
