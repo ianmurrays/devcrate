@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -213,7 +214,14 @@ func up(flags map[string]string, args []string) error {
 	}
 
 	fmt.Println("running setup…")
-	cmd := fmt.Sprintf("sh -s -- %s %t %s %t %t", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer, flags["--rebuild"] != "")
+	// A new clone checks out the laptop checkout's branch: "HEAD" when it is
+	// detached, empty for `up <git-url>` (the default branch, no warning).
+	var branch string
+	if env.root != "" {
+		out, _ := exec.Command("git", "-C", env.root, "rev-parse", "--abbrev-ref", "HEAD").Output()
+		branch = strings.TrimSpace(string(out))
+	}
+	cmd := fmt.Sprintf("sh -s -- %s %t %s %t %t %s", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer, flags["--rebuild"] != "", shellQuote(branch))
 	// Setup gets the laptop's agent, for the setup scripts, git and builds
 	// (and, through the Agent's relay, the devcontainer's lifecycle hooks).
 	agentSock, err := forwardAgent()

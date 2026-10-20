@@ -76,7 +76,9 @@ The Provider gets its `[providers.<name>]` table overlaid with every other `.dev
 
 Environment names use only `a-z`, `0-9` and `-`, and are at most 32 characters. If two repos derive the same name, `up` aborts setup in the second one and asks you to set `name` in its `.devcrate.toml`.
 
-`devcrate up <git-url>` works outside any clone: it reads `.devcrate.toml` from the repo's default branch with a shallow, blob-less clone that uses your local git credentials.
+When `up` creates the Environment's clone, it checks out the branch your local clone is on, if that branch is on origin. Otherwise (an unpushed branch or a detached HEAD) it warns and the clone stays on the default branch. `up` never switches the branch of an existing clone, so work on the VM is never disturbed: switch it yourself with `devcrate ssh -- git switch <branch>`.
+
+`devcrate up <git-url>` works outside any clone: it reads `.devcrate.toml` from the repo's default branch with a shallow, blob-less clone that uses your local git credentials. Its clone is on the default branch.
 
 `stop`, `delete` and `status` take an optional `[name]`. Inside a repo it defaults to the repo's Environment; outside one it is required. A name is looked up in every Provider configured under `[providers.*]` (and the current repo's); if more than one has it, pass `--provider <name>`. Every command takes `--provider <name>` to skip the lookup, and `list` shows the Environments of every configured Provider.
 
