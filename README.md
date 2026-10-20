@@ -336,6 +336,12 @@ devcrate save-image [name]
 
 devcrate removes its own state from the VM, and the Provider snapshots it and destroys the VM, keeping the volume: the Environment ends Stopped, as after `devcrate stop`. From then on, every `up` of the repo's Environments, its worktree Environments included, boots from the Base image. Setup still runs on every `up`, so your setup scripts must stay idempotent. Saving again, from any of the repo's Environments, replaces the Base image. `save-image` refuses an Environment that is not Ready, and fails before touching the VM when the Provider does not support it.
 
+`devcrate status` shows the Base image the Environment boots from, with its creation time, since it bills for storage (`base_image` in `--json`). `devcrate delete` leaves it, since it belongs to the repo. To remove it, so the next `up` boots from the `image` option or stock Ubuntu again, touching no Environment:
+
+```sh
+devcrate save-image --delete [name]
+```
+
 ## Coding-assistant skill
 
 `skills/devcrate/SKILL.md` teaches a coding assistant such as Claude Code to set up and use an Environment for a repo. Install it in Claude Code:

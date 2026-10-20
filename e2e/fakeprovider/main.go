@@ -9,7 +9,8 @@
 // /etc/docker/daemon.json registry-mirrors at boot.
 //
 // A Base image is a committed VM container, tagged
-// devcrate-fake-base-<base_name>:<unix nanoseconds>; up boots from the newest.
+// devcrate-fake-base-<base_name>:<unix nanoseconds>; up boots from the newest,
+// and status reports it.
 //
 // Test plumbing: the option `fail = "<verb>"` makes that verb fail, and
 // `busy_while = "<host path>"` makes status report busy while that file exists.
@@ -43,6 +44,7 @@ type request struct {
 	UserData      string         `json:"user_data"`
 	BaseName      string         `json:"base_name"`
 	Check         bool           `json:"check"`
+	Delete        bool           `json:"delete"`
 }
 
 type result struct {
@@ -52,6 +54,12 @@ type result struct {
 	Port  int    `json:"port,omitempty"`
 
 	SelfStopEnv map[string]string `json:"self_stop_env,omitempty"`
+	BaseImage   *baseImage        `json:"base_image,omitempty"`
+}
+
+type baseImage struct {
+	ID      string `json:"id"`
+	Created string `json:"created"`
 }
 
 // hostDocker is where the host's Docker socket is mounted in the VM.
@@ -76,12 +84,17 @@ func main() {
 		res.SelfStopEnv = selfStopEnv(req)
 		out = res
 	case "status":
-		out = status(req.EnvironmentID)
+		res := status(req.EnvironmentID)
 		if path, ok := req.Options["busy_while"].(string); ok {
 			if _, err := os.Stat(path); err == nil {
-				out = result{State: "busy"}
+				res = result{State: "busy"}
 			}
 		}
+		if base := baseImages(req.BaseName); len(base) > 0 {
+			created := docker(nil, "image", "inspect", "-f", "{{.Created}}", base[0])
+			res.BaseImage = &baseImage{ID: base[0], Created: strings.TrimSpace(created)}
+		}
+		out = res
 	case "list":
 		out = list()
 	case "self-stop":
@@ -94,6 +107,11 @@ func main() {
 		}
 		out = map[string]string{"script": script}
 	case "save-image":
+		if req.Delete {
+			commitLock()
+			deleteBaseImages(baseImages(req.BaseName))
+			return
+		}
 		if req.Check {
 			return
 		}
@@ -180,23 +198,36 @@ func saveImage(req request) {
 	if req.Options["save_image_fails"] == true {
 		fail("snapshot failing as asked (save_image_fails)")
 	}
-	// Parallel commits of the same layer race in Docker's containerd image
-	// store ("failed to export layer"). Released on exit.
-	lock, err := os.OpenFile(filepath.Join(os.TempDir(), "devcrate-fake-commit.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		fail("%v", err)
-	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		fail("locking %s: %v", lock.Name(), err)
-	}
+	commitLock()
 	// The label lets the harness prune the untagged older ones.
 	docker(nil, "commit", "-c", "LABEL devcrate.fake.base="+req.BaseName, c, fmt.Sprintf("%s:%d", repo, time.Now().UnixNano()))
 	removeContainer(req.EnvironmentID)
 	// Untagged, as a cloud deletes a snapshot that VMs still run from: a
 	// Base image saved from a VM booted from an older one is its child, and
 	// a sibling's VM may still run from it.
-	for _, old := range baseImages(req.BaseName)[1:] {
-		docker(nil, "rmi", "-f", old)
+	deleteBaseImages(baseImages(req.BaseName)[1:])
+}
+
+// deleteBaseImages untags images.
+func deleteBaseImages(images []string) {
+	for _, image := range images {
+		docker(nil, "rmi", "-f", image)
+	}
+}
+
+// commitLock serializes image commits and removals: parallel commits of the
+// same layer race in Docker's containerd image store ("failed to export
+// layer"). Released on exit; held in a global so no finalizer closes it.
+var lock *os.File
+
+func commitLock() {
+	var err error
+	lock, err = os.OpenFile(filepath.Join(os.TempDir(), "devcrate-fake-commit.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		fail("%v", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		fail("locking %s: %v", lock.Name(), err)
 	}
 }
 
