@@ -25,6 +25,9 @@ type Request struct {
 	Options       map[string]any `json:"options"`
 	SSHPublicKey  string         `json:"ssh_public_key"`
 	UserData      string         `json:"user_data"`
+	// BaseName is the repo's base Environment name, shared by its worktree
+	// Environments: what its Base image is labelled with.
+	BaseName string `json:"base_name"`
 }
 
 // State is an Environment's state as a Provider reports it.
