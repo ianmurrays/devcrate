@@ -5,7 +5,7 @@ A local CLI that runs dev environments on cloud VMs, stops them when idle, and c
 ## Language
 
 **Environment**:
-One dev workspace: a VM with a persistent disk, optionally running a devcontainer, identified by a name.
+One dev workspace: a VM with a persistent disk, optionally running a devcontainer, identified by a name. A repo can have several Environments, one per worktree.
 _Avoid_: Workspace, machine, box
 
 **Provider**:

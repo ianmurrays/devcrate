@@ -40,7 +40,7 @@ var (
 	userData    = volumeScript + userDataSh
 )
 
-const usage = "usage: devcrate up [--rebuild] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
+const usage = "usage: devcrate up [--rebuild] [--name <name>] [git-url] | stop [name] | delete [--yes] [name] | status [--json] [name] | list [--json] | ssh [--container] [name] [-- <cmd>] | keep-alive [name] <duration> | forward [--no-detect] [name] [-p <remote> | -p <local>:<remote>]...  (each takes --provider <name>)"
 
 // busyPoll is how often `up` re-asks the Provider while it reports busy.
 const busyPoll = 2 * time.Second
@@ -61,7 +61,7 @@ func run(args []string) error {
 	allowed := []string{"--provider="}
 	switch args[0] {
 	case "up":
-		cmd, allowed = up, append(allowed, "--rebuild")
+		cmd, allowed = up, append(allowed, "--rebuild", "--name=")
 	case "stop":
 		cmd = stop
 	case "delete":
@@ -136,9 +136,27 @@ func up(flags map[string]string, args []string) error {
 	if len(args) == 1 && !isGitURL(args[0]) {
 		return fmt.Errorf("%q is a bare Environment name: run devcrate up inside its repo, or pass a git URL", args[0])
 	}
-	env, err := fromRepo(flags["--provider"], args...)
+	name := flags["--name"]
+	if name != "" && len(args) == 1 {
+		return errors.New("--name works only in a local clone, not with a git URL")
+	}
+	env, err := fromRepo(flags["--provider"], name, args...)
 	if err != nil {
 		return err
+	}
+	// An Environment cannot be renamed: the worktree's stored one must go
+	// first, so it is never orphaned.
+	renaming := name != "" && name != env.storedName
+	if renaming && env.storedName != "" {
+		stored := *env
+		stored.Name = env.storedName
+		res, err := stored.provider.Status(stored.request())
+		if err != nil {
+			return err
+		}
+		if res.State != provider.NotFound {
+			return fmt.Errorf("this worktree uses Environment %s, which still exists: run devcrate delete %s first, then devcrate up --name %s", stored.Name, stored.Name, name)
+		}
 	}
 	unlock, err := lock(env.Name)
 	if err != nil {
@@ -169,6 +187,12 @@ func up(flags map[string]string, args []string) error {
 	if env.idleTimeout != 0 {
 		if selfStop, err = env.provider.SelfStop(env.request()); err != nil {
 			return fmt.Errorf("%w, %s", err, noCredential)
+		}
+	}
+
+	if renaming {
+		if err := repo.StoreName(env.root, name); err != nil {
+			return err
 		}
 	}
 
@@ -213,7 +237,7 @@ func up(flags map[string]string, args []string) error {
 	}
 
 	fmt.Println("running setup…")
-	cmd := fmt.Sprintf("sh -s -- %s %t %s %t %t", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer, flags["--rebuild"] != "")
+	cmd := fmt.Sprintf("sh -s -- %s %t %s %t %t %s", shellQuote(env.origin), env.devcontainer, shellQuote(env.setupScript), env.userScriptInContainer, flags["--rebuild"] != "", shellQuote(env.branch))
 	// Setup gets the laptop's agent, for the setup scripts, git and builds
 	// (and, through the Agent's relay, the devcontainer's lifecycle hooks).
 	agentSock, err := forwardAgent()
@@ -327,7 +351,7 @@ func list(flags map[string]string, _ []string) error {
 	names := cfg.providerNames()
 	if flags["--provider"] != "" {
 		names = []string{flags["--provider"]}
-	} else if ctx, err := repo.Load("."); err == nil {
+	} else if ctx, err := repo.Load(".", ""); err == nil {
 		p := ctx.Provider
 		if p == "" {
 			p = cfg.Provider
@@ -367,9 +391,16 @@ func list(flags map[string]string, _ []string) error {
 }
 
 type environment struct {
-	Name     string
-	origin   string         // clone URL; empty when resolved outside a repo
-	root     string         // the laptop clone; empty without one
+	Name   string
+	origin string // clone URL; empty when resolved outside a repo
+	root   string // the laptop clone; empty without one
+	base   string // the base name: Name without a linked worktree's suffix, --name or the stored name
+	// storedName is the worktree's remembered name (repo.StoreName), "" when
+	// it has none.
+	storedName string
+	// branch is the laptop checkout's branch, for a new clone: "HEAD" when
+	// detached, "" for `up <git-url>` (the default branch, no warning).
+	branch   string
 	options  map[string]any // passed to the Provider unchanged
 	provider *provider.Provider
 	key      *remote.Key
@@ -388,14 +419,14 @@ type environment struct {
 
 // fromRepo is the Environment of the repo at the git URL, if given, else of
 // the repo in the current directory. providerName, if set, overrides the
-// repo's Provider.
-func fromRepo(providerName string, url ...string) (*environment, error) {
+// repo's Provider; name, if set, overrides the Environment name.
+func fromRepo(providerName, name string, url ...string) (*environment, error) {
 	var ctx *repo.Context
 	var err error
 	if len(url) == 1 {
 		ctx, err = repo.FromURL(url[0])
 	} else {
-		ctx, err = repo.Load(".")
+		ctx, err = repo.Load(".", name)
 	}
 	if err != nil {
 		return nil, err
@@ -444,7 +475,7 @@ func fromRepo(providerName string, url ...string) (*environment, error) {
 		return nil, err
 	}
 	return &environment{
-		Name: ctx.Name, origin: ctx.Origin, root: ctx.Root, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
+		Name: ctx.Name, storedName: ctx.StoredName, branch: ctx.Branch, origin: ctx.Origin, root: ctx.Root, base: ctx.Base, options: cfg.options(providerName, ctx.Options), provider: p, key: key, devcontainer: devcontainer,
 		setupScript: ctx.SetupScript, userScript: userScript, userScriptInContainer: cfg.SetupScriptInContainer,
 		idleTimeout: idleTimeout,
 	}, nil
@@ -459,7 +490,7 @@ func resolve(providerName string, args []string) (*environment, error) {
 	if len(args) > 1 {
 		return nil, errors.New(usage)
 	}
-	env, repoErr := fromRepo(providerName)
+	env, repoErr := fromRepo(providerName, "")
 	if len(args) == 0 {
 		if errors.Is(repoErr, repo.ErrNotRepo) {
 			return nil, errors.New("outside a repo, pass an Environment name")
@@ -503,7 +534,7 @@ func resolve(providerName string, args []string) (*environment, error) {
 		}
 		e := &environment{Name: name, options: candidates[p], provider: prov, key: key, searched: searched}
 		if repoErr == nil && name == env.Name {
-			e.root = env.root // the current repo's Environment, by name
+			e.root, e.base = env.root, env.base // the current repo's Environment, by name
 		}
 		if providerName != "" {
 			return e, nil

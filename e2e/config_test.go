@@ -63,6 +63,12 @@ func TestUpWithGitURLOutsideARepo(t *testing.T) {
 	if out, code := e.VM("cat /var/lib/devcrate/workspace/README.md"); code != 0 || out != "fixture "+e.Name+"\n" {
 		t.Errorf("workspace README = %q (exit %d), want the cloned repo", out, code)
 	}
+	if b := e.vmBranch(); b != "main" {
+		t.Errorf("VM branch = %q, want the default branch main", b)
+	}
+	if strings.Contains(r.Stderr, "warning") {
+		t.Errorf("up <git-url> warned: %q", r.Stderr)
+	}
 	if r := e.Devcrate("status"); r.Stdout != "ready\n" {
 		t.Errorf("status in the local clone = %q, want ready", r.Stdout)
 	}

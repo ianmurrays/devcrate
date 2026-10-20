@@ -18,9 +18,19 @@ import (
 
 // Context is what `up` needs to know about the repo it runs in.
 type Context struct {
-	Origin   string         // clone URL
-	Root     string         // the local clone's top directory; "" from FromURL
-	Name     string         // Environment name: `name` from .devcrate.toml, else the repo name from Origin
+	Origin string // clone URL
+	Root   string // the local clone's top directory; "" from FromURL
+	Name   string // Environment name: see Load
+	// Base is the base name: `name` from .devcrate.toml, else the repo name
+	// from Origin; Name without a linked worktree's suffix, --name or the
+	// stored name.
+	Base string
+	// StoredName is the name in the worktree's devcrate-name file, "" when
+	// it has none.
+	StoredName string
+	// Branch is the checked-out branch, even one with no commits yet;
+	// "HEAD" when detached or unreadable; "" from FromURL.
+	Branch   string
 	Provider string         // `provider` from .devcrate.toml, "" when unset
 	Options  map[string]any // every other .devcrate.toml key, passed to the Provider unchanged
 	// Devcontainer is `devcontainer` from .devcrate.toml, nil when unset.
@@ -55,8 +65,11 @@ func ParseIdleTimeout(v any) (time.Duration, error) {
 // ErrNotRepo is Load's error when dir is not inside a git repo.
 var ErrNotRepo = errors.New("not inside a git repo: run devcrate in a local clone")
 
-// Load reads the local clone containing dir.
-func Load(dir string) (*Context, error) {
+// Load reads the local clone containing dir. The Environment name is name,
+// if set, else the worktree's stored name (see StoreName), else `name` from
+// .devcrate.toml or the repo name, plus `-<worktree dir>` in a linked
+// worktree (ADR 0008).
+func Load(dir, name string) (*Context, error) {
 	root, err := git(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, ErrNotRepo
@@ -74,7 +87,64 @@ func Load(dir string) (*Context, error) {
 		return nil, err
 	}
 	c.Root = root
+	c.Base = c.Name
+	// symbolic-ref, not rev-parse --abbrev-ref: it names an unborn branch.
+	if c.Branch, err = git(dir, "symbolic-ref", "--short", "-q", "HEAD"); err != nil || c.Branch == "" {
+		c.Branch = "HEAD"
+	}
+	file, err := nameFile(dir)
+	if err != nil {
+		return nil, err
+	}
+	if b, err := os.ReadFile(file); err == nil {
+		c.StoredName = strings.TrimSpace(string(b))
+		if err := CheckName(c.StoredName); err != nil {
+			return nil, fmt.Errorf("%s: %w", file, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	switch {
+	case name != "":
+		if err := CheckName(name); err != nil {
+			return nil, err
+		}
+		c.Name = name
+	case c.StoredName != "":
+		c.Name = c.StoredName
+	default:
+		linked, err := isLinkedWorktree(dir)
+		if err != nil {
+			return nil, err
+		}
+		if linked {
+			// A linked worktree gets its own Environment (ADR 0008).
+			c.Name += "-" + invalidNameChars.ReplaceAllString(strings.ToLower(filepath.Base(root)), "-")
+			if !validName.MatchString(c.Name) {
+				return nil, fmt.Errorf("this worktree's Environment name %q is longer than 32 characters: pick a shorter one with devcrate up --name <name>", c.Name)
+			}
+		}
+	}
 	return c, nil
+}
+
+// StoreName records name as the Environment name of the worktree containing
+// dir, in devcrate-name in the worktree's own git dir, outside the working
+// tree.
+func StoreName(dir, name string) error {
+	file, err := nameFile(dir)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file, []byte(name+"\n"), 0o644)
+}
+
+func nameFile(dir string) (string, error) {
+	gitDir, err := git(dir, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --absolute-git-dir: %w", err)
+	}
+	return filepath.Join(gitDir, "devcrate-name"), nil
 }
 
 // FromURL reads .devcrate.toml from the default branch of the repo at url,
@@ -164,4 +234,25 @@ func git(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+var invalidNameChars = regexp.MustCompile(`[^a-z0-9-]`)
+
+// isLinkedWorktree reports whether dir is in a linked git worktree rather
+// than the main one: a linked worktree's git dir is not the common one.
+func isLinkedWorktree(dir string) (bool, error) {
+	var dirs [2]string
+	for i, flag := range []string{"--git-dir", "--git-common-dir"} {
+		d, err := git(dir, "rev-parse", flag)
+		if err != nil {
+			return false, fmt.Errorf("git rev-parse %s: %w", flag, err)
+		}
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(dir, d)
+		}
+		if dirs[i], err = filepath.EvalSymlinks(d); err != nil {
+			return false, err
+		}
+	}
+	return dirs[0] != dirs[1], nil
 }
