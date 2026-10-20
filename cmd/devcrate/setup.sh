@@ -151,16 +151,26 @@ for root in "Docker's data-root:$docker_root" "containerd's root:$containerd_roo
 	esac
 done
 
-# The VM has only the forwarded SSH agent, no HTTPS credentials, so GitHub
-# HTTPS URLs go over SSH. The host key is pinned from api.github.com/meta.
+# A git that would prompt for a password reads it from this script, setup's
+# stdin: fail instead.
+export GIT_TERMINAL_PROMPT=0
+# Without a forwarded GitHub token the VM has only the forwarded SSH agent, so
+# GitHub HTTPS URLs go over SSH. With one (and no agent), the fragment included
+# below sends git to GitHub over HTTPS instead, and this rewrite would undo it.
+# The host key is pinned from api.github.com/meta.
 # ponytail: GitHub only, add other hosts when someone uses them.
-git config --system url."git@github.com:".insteadOf https://github.com/
+if grep -qsF '[credential "https://github.com"]' /run/devcrate/creds/git/config; then
+	git config --system --unset-all url."git@github.com:".insteadOf || true
+else
+	git config --system url."git@github.com:".insteadOf https://github.com/
+fi
 grep -qs '^github.com ssh-ed25519 ' /etc/ssh/ssh_known_hosts ||
 	echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >>/etc/ssh/ssh_known_hosts
 
-# Commit signing (ADR 0006): the system git config includes the fragment
-# devcrate pushes with git_signing_key. git skips a missing include, so
-# without the key commits are unsigned. Added once, keeping other settings.
+# Commit signing (ADR 0006) and GitHub token mode: the system git config
+# includes the fragment devcrate pushes with git_signing_key or a forwarded
+# GITHUB_TOKEN. git skips a missing include, so without the key commits are
+# unsigned. Added once, keeping other settings.
 add_signing_include='git config --system --get-all include.path | grep -qxF /run/devcrate/creds/git/config ||
 	git config --system --add include.path /run/devcrate/creds/git/config'
 sh -c "$add_signing_include"

@@ -44,9 +44,18 @@ func pushCreds(client *ssh.Client, env *environment) error {
 // (setup.sh), so a missing fragment means unsigned commits, not failing ones.
 const signingGitConfig = "[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = ssh-keygen\n[user]\n\tsigningkey = /run/devcrate/creds/git/signing_key\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
 
+// githubTokenGitConfig is the git config fragment that takes git to GitHub over
+// HTTPS with the forwarded GITHUB_TOKEN, when no SSH agent is forwarded. The
+// helper reads the token from the env file at each use, so it is never in git
+// config and a token refreshed by the next push takes effect. Its presence
+// tells setup.sh to drop the VM's HTTPS-to-SSH rewrite.
+const githubTokenGitConfig = "[url \"https://github.com/\"]\n\tinsteadOf = git@github.com:\n\tinsteadOf = ssh://git@github.com/\n" +
+	"[credential \"https://github.com\"]\n\thelper = \"!f() { case $1 in get) . /run/devcrate/creds/env; echo username=x-access-token; echo password=$GITHUB_TOKEN;; esac; }; f\"\n"
+
 // credsArchive is a tar of env (sourceable exports), names (one forwarded
 // var per line), files/<path relative to $HOME>, git/ (the signing key and
-// signingGitConfig, or nothing) and repo/<path in the repo>: the Environment
+// signingGitConfig, then githubTokenGitConfig in GitHub token mode, or
+// nothing) and repo/<path in the repo>: the Environment
 // name's forward_repo_files, else the base name's, from the laptop clone at
 // root, or nothing when root is "".
 func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
@@ -121,6 +130,7 @@ func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 	if err := tw.WriteHeader(&tar.Header{Name: "git/", Mode: 0o711, Typeflag: tar.TypeDir}); err != nil {
 		return nil, err
 	}
+	var gitConfig string
 	if c.GitSigningKey != "" {
 		rel, err := homeRelative("git_signing_key", home, c.GitSigningKey)
 		if err != nil {
@@ -133,7 +143,15 @@ func (c *config) credsArchive(name, base, root string) (*bytes.Buffer, error) {
 			return nil, fmt.Errorf("git_signing_key: %w", err)
 		} else if err := add("git/signing_key", key); err != nil {
 			return nil, err
-		} else if err := addMode("git/config", 0o644, []byte(signingGitConfig)); err != nil {
+		} else {
+			gitConfig = signingGitConfig
+		}
+	}
+	if c.ForwardAgent != nil && !*c.ForwardAgent && slices.Contains(strings.Split(names.String(), "\n"), "GITHUB_TOKEN") {
+		gitConfig += githubTokenGitConfig
+	}
+	if gitConfig != "" {
+		if err := addMode("git/config", 0o644, []byte(gitConfig)); err != nil {
 			return nil, err
 		}
 	}
