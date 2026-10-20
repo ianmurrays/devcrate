@@ -17,7 +17,7 @@ func (e *Env) baseName() string {
 	return out
 }
 
-func TestUpRecordsTheMainEnvironmentNameAsBaseName(t *testing.T) {
+func TestUpRecordsTheBaseEnvironmentName(t *testing.T) {
 	t.Parallel()
 	e := NewEnv(t)
 	w := e.Worktree("feat", e.Name+"-feat")
@@ -34,13 +34,13 @@ func TestUpRecordsTheMainEnvironmentNameAsBaseName(t *testing.T) {
 		t.Fatalf("up in the linked worktree exit %d", r.Code)
 	}
 	if got := w.baseName(); got != e.Name {
-		t.Errorf("linked worktree's base-name = %q, want the main Environment's %q", got, e.Name)
+		t.Errorf("linked worktree's base-name = %q, want the base Environment name %q", got, e.Name)
 	}
 	if r := n.Devcrate("up", "--name", x.Name); r.Code != 0 {
 		t.Fatalf("up --name %s exit %d", x.Name, r.Code)
 	}
 	if got := x.baseName(); got != e.Name {
-		t.Errorf("up --name %s's base-name = %q, want the main Environment's %q", x.Name, got, e.Name)
+		t.Errorf("up --name %s's base-name = %q, want the base Environment name %q", x.Name, got, e.Name)
 	}
 }
 
