@@ -6,6 +6,7 @@ package vultr
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -40,15 +41,20 @@ type result struct {
 	Code           int
 }
 
-// run runs the Provider verb with a request for Environment env.
-func (f *fixture) run(verb, env string, options map[string]any) result {
+// run runs the Provider verb with a request for Environment env, whose
+// base_name is env too, with extra fields added.
+func (f *fixture) run(verb, env string, options map[string]any, extra ...map[string]any) result {
 	f.t.Helper()
 	if options == nil {
 		options = map[string]any{}
 	}
-	req, _ := json.Marshal(map[string]any{
-		"environment_id": env, "options": options, "ssh_public_key": pubKey, "user_data": userData,
-	})
+	fields := map[string]any{
+		"environment_id": env, "options": options, "ssh_public_key": pubKey, "user_data": userData, "base_name": env,
+	}
+	for _, e := range extra {
+		maps.Copy(fields, e)
+	}
+	req, _ := json.Marshal(fields)
 	cmd := exec.Command("./devcrate-provider-vultr", verb)
 	cmd.Stdin = bytes.NewReader(req)
 	cmd.Env = append([]string{"PATH=" + f.path, "HOME=" + f.home, "VULTR_API_URL=" + f.api.URL + "/v2", "DEVCRATE_VULTR_POLL=0"}, f.env...)
@@ -66,9 +72,9 @@ func (f *fixture) run(verb, env string, options map[string]any) result {
 }
 
 // ok runs a verb that must succeed and decodes its stdout into out (if non-nil).
-func (f *fixture) ok(verb, env string, options map[string]any, out any) {
+func (f *fixture) ok(verb, env string, options map[string]any, out any, extra ...map[string]any) {
 	f.t.Helper()
-	r := f.run(verb, env, options)
+	r := f.run(verb, env, options, extra...)
 	if r.Code != 0 {
 		f.t.Fatalf("%s failed: %s", verb, r.Stderr)
 	}

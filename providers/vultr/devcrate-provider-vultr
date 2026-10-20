@@ -32,6 +32,7 @@ image=$(opt image "")
 volume_size=$(opt volume_size 50)
 
 name=$(printf '%s' "$req" | jq -r '.environment_id // ""')
+base_name=$(printf '%s' "$req" | jq -r '.base_name // ""')
 
 # The tests point these at a fake API and stop the waits from sleeping.
 api_url=${VULTR_API_URL:-https://api.vultr.com/v2}
@@ -75,6 +76,22 @@ retry() {
 		fi
 		sleep "$poll"
 	done
+}
+
+# A Base image is a snapshot whose description is devcrate-base:<base_name>.
+base_label="devcrate-base:$base_name"
+
+# base_image prints base_name's newest complete Base image as JSON, or
+# nothing.
+base_image() {
+	[ -n "$base_name" ] || return 0
+	base_images | jq -c '[.[] | select(.status == "complete")][0] // empty'
+}
+
+# base_images prints base_name's Base images as a JSON array, newest first.
+base_images() {
+	out=$(api GET "/snapshots?per_page=500")
+	printf '%s' "$out" | jq -c --arg d "$base_label" '[.snapshots[] | select(.description == $d)] | sort_by(.date_created) | reverse'
 }
 
 # for_env NAME points the functions below at Environment NAME.
@@ -140,9 +157,15 @@ ssh_key_id() {
 	echo "$id"
 }
 
-# source_image prints the instance's image as JSON: the snapshot in image, or
-# the newest x64 Ubuntu LTS.
+# source_image prints the instance's image as JSON: base_name's Base image,
+# the snapshot in image, or the newest x64 Ubuntu LTS. A snapshot can be
+# deployed in any region.
 source_image() {
+	b=$(base_image)
+	if [ -n "$b" ]; then
+		printf '%s' "$b" | jq -c '{snapshot_id: .id}'
+		return
+	fi
 	if [ -n "$image" ]; then
 		jq -nc --arg s "$image" '{snapshot_id: $s}'
 		return
@@ -312,6 +335,56 @@ delete() {
 	fi
 }
 
+# save_image halts the instance, snapshots it as base_name's newest Base
+# image, waits for the snapshot to be complete, deletes every older Base
+# image, and destroys the instance; the volume stays. Should the snapshot
+# fail, the halted instance and the old Base image stay: up starts it again.
+save_image() {
+	[ -n "$base_name" ] || die "save-image: the request has no base_name"
+	# check only validates, which reaching here (an API key is set) did.
+	[ "$(printf '%s' "$req" | jq -r '.check // false')" = false ] || return 0
+	if [ "$(printf '%s' "$req" | jq -r '.delete // false')" != false ]; then
+		for s in $(base_images | jq -r '.[].id'); do
+			api DELETE "/snapshots/$s" >/dev/null
+		done
+		return
+	fi
+	i=$(instances)
+	[ "$(printf '%s' "$i" | jq length)" -gt 0 ] || die "$res has no instance to save"
+	id=$(printf '%s' "$i" | jq -r '.[0].id')
+	api POST "/instances/$id/halt" >/dev/null
+	n=0
+	until [ "$(status | jq -r .state)" = stopped ]; do
+		n=$((n + 1))
+		[ "$n" -lt 120 ] || die "$res did not halt after 120 polls, $poll seconds apart"
+		sleep "$poll"
+	done
+
+	out=$(api POST /snapshots "$(jq -nc --arg i "$id" --arg d "$base_label" '{instance_id: $i, description: $d}')")
+	snap=$(printf '%s' "$out" | jq -r .snapshot.id)
+	echo "vultr: waiting for snapshot $snap to be complete (this takes several minutes)" >&2
+	# Up to 720 polls (an hour), with a progress line every 12 (a minute).
+	n=0
+	while :; do
+		out=$(api GET "/snapshots/$snap")
+		st=$(printf '%s' "$out" | jq -r .snapshot.status)
+		[ "$st" = complete ] && break
+		n=$((n + 1))
+		[ "$n" -lt 720 ] || die "snapshot $snap is still $st after 720 polls, $poll seconds apart"
+		[ $((n % 12)) -ne 0 ] || echo "vultr: snapshot $snap is $st" >&2
+		sleep "$poll"
+	done
+	echo "vultr: snapshot $snap is complete" >&2
+
+	# Not a newer one, which a sibling worktree's save may be making.
+	created=$(printf '%s' "$out" | jq -r .snapshot.date_created)
+	old=$(base_images)
+	for s in $(printf '%s' "$old" | jq -r --arg s "$snap" --arg c "$created" '.[] | select(.id != $s and .date_created <= $c) | .id'); do
+		api DELETE "/snapshots/$s" >/dev/null
+	done
+	stop
+}
+
 # list: every Environment has a volume (a stopped one has nothing else).
 list() {
 	out=$(api GET "/blocks?per_page=500")
@@ -351,9 +424,13 @@ printf 'Authorization: Bearer %s\n' "$key" >"$auth"
 
 case $verb in
 up) up ;;
-status) status ;;
+status)
+	b=$(base_image)
+	status | jq -c --argjson b "${b:-null}" 'if $b then . + {base_image: {id: $b.id, created: $b.date_created}} else . end'
+	;;
 stop) stop ;;
 delete) delete ;;
+save-image) save_image ;;
 list) list ;;
 *) die "unknown verb \"$verb\"" ;;
 esac
